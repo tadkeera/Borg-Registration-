@@ -1,8 +1,12 @@
-node_modules/
-build/
-dist/
-coverage/
-.DS_Store
-*.log
-.env*
-!.env.example
+# All exclusions have been commented out on your request to allow pushing all files including .env to GitHub.
+# Note: node_modules is typically ignored to avoid massive file sync overhead, but is commented out per request.
+
+# node_modules/
+# build/
+# dist/
+# coverage/
+# .DS_Store
+# *.log
+# .env*
+# !.env.example
+
