@@ -65,23 +65,8 @@ function getTargetDate(targetDayOfWeekIndex: number): string {
 // DATABASE STORAGE ENGINE & SEEDING
 // -------------------------------------------------------------------------
 const defaultDb: DbState = {
-  doctors: [
-    { id: 'doc-1', name: 'د. أحمد اليماني', specialty: 'باطنية وقلب وأوعية دموية', is_active: true, allow_second_week_booking: false, limit_two_patients_per_number: false },
-    { id: 'doc-2', name: 'د. سارة عبد الرحمن', specialty: 'أطفال وحديثي ولادة', is_active: true, allow_second_week_booking: false, limit_two_patients_per_number: false },
-    { id: 'doc-3', name: 'د. خالد السقاف', specialty: 'عظام ومفاصل وتشوهات خلقية', is_active: true, allow_second_week_booking: false, limit_two_patients_per_number: false },
-    { id: 'doc-4', name: 'د. ليلى الحميري', specialty: 'نساء وولادة وعقم', is_active: true, allow_second_week_booking: false, limit_two_patients_per_number: false }
-  ],
-  schedules: [
-    // doc-1
-    { id: 'sch-1', doctor_id: 'doc-1', day_of_week: 0, max_capacity: 10, available_capacity: 8, start_time: '09:00', end_time: '12:00' }, // Sat
-    { id: 'sch-2', doctor_id: 'doc-1', day_of_week: 2, max_capacity: 10, available_capacity: 10, start_time: '09:00', end_time: '12:00' }, // Mon
-    // doc-2
-    { id: 'sch-3', doctor_id: 'doc-2', day_of_week: 1, max_capacity: 8, available_capacity: 8, start_time: '15:00', end_time: '18:00' }, // Sun
-    { id: 'sch-4', doctor_id: 'doc-2', day_of_week: 3, max_capacity: 8, available_capacity: 8, start_time: '15:00', end_time: '18:00' }, // Tue
-    // doc-3
-    { id: 'sch-5', doctor_id: 'doc-3', day_of_week: 0, max_capacity: 15, available_capacity: 14, start_time: '08:00', end_time: '13:00' }, // Sat
-    { id: 'sch-6', doctor_id: 'doc-3', day_of_week: 5, max_capacity: 15, available_capacity: 15, start_time: '08:00', end_time: '13:00' }  // Thu
-  ],
+  doctors: [],
+  schedules: [],
   bookings: [],
   whatsapp_settings: {
     id: 1,
@@ -93,68 +78,38 @@ const defaultDb: DbState = {
   },
   system_settings: {
     id: 1,
-    receptionist_name_required: true,
-    admin_password: '123' // default (changeable)
+    receptionist_name_required: false,
+    admin_password: '123'
   },
   bot_sessions: {},
-  whatsapp_logs: []
+  whatsapp_logs: [],
+  users: [
+    { id: 'u-1', username: 'admin', password: '123', role: 'admin', employee_name: 'مدير النظام الرئيسي' },
+    { id: 'u-2', username: 'receptionist', password: 'receptionist', role: 'receptionist', employee_name: 'موظف الاستقبال الافتراضي' }
+  ]
 };
 
-// Seed Bookings (one expired unpaid to demo cron, some completed)
-const nowStr = getYemenTime().toISOString().split('T')[0];
-const threeDaysAgo = new Date(getYemenTime().getTime() - 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-defaultDb.bookings = [
-  {
-    id: 'book-old-unpaid',
-    doctor_id: 'doc-1',
-    schedule_id: 'sch-1',
-    patient_name: 'صالح محمد علي',
-    patient_phone: '96777123456',
-    booking_date: threeDaysAgo,
-    queue_number: 1,
-    status: 'pending',
-    payment_status: 'pending', // Expired unpaid!
-    verified_by_whatsapp: true,
-    created_at: new Date(getYemenTime().getTime() - 3 * 24 * 60 * 60 * 1000).toISOString()
-  },
-  {
-    id: 'book-confirmed',
-    doctor_id: 'doc-1',
-    schedule_id: 'sch-1',
-    patient_name: 'عمار ياسر الأصبحي',
-    patient_phone: '96777555555',
-    booking_date: nowStr,
-    queue_number: 2,
-    status: 'confirmed',
-    payment_status: 'paid',
-    verified_by_whatsapp: true,
-    created_at: new Date(getYemenTime().getTime() - 1 * 24 * 60 * 60 * 1000).toISOString()
-  },
-  {
-    id: 'book-new-pending',
-    doctor_id: 'doc-3',
-    schedule_id: 'sch-5',
-    patient_name: 'فاطمة عبدالله حسن',
-    patient_phone: '96773333333',
-    booking_date: nowStr,
-    queue_number: 1,
-    status: 'pending',
-    payment_status: 'pending',
-    verified_by_whatsapp: false,
-    created_at: getYemenTime().toISOString()
-  }
-];
-
-// Initialize and Seed JSON Database file if not exist
-if (!fs.existsSync(DB_FILE)) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(defaultDb, null, 2), 'utf-8');
-}
+// Initialize and Seed JSON Database file - Force a clean start as requested
+fs.writeFileSync(DB_FILE, JSON.stringify(defaultDb, null, 2), 'utf-8');
 
 function readDb(): DbState {
   try {
     const data = fs.readFileSync(DB_FILE, 'utf-8');
-    return JSON.parse(data);
+    const db = JSON.parse(data);
+    if (!db.users) {
+      db.users = [
+        { id: 'u-1', username: 'admin', password: '123', role: 'admin', employee_name: 'مدير النظام الرئيسي' },
+        { id: 'u-2', username: 'receptionist', password: 'receptionist', role: 'receptionist', employee_name: 'موظف الاستقبال الافتراضي' }
+      ];
+    } else {
+      db.users = db.users.map((u: any) => {
+        if (!u.employee_name) {
+          u.employee_name = u.role === 'admin' ? 'مدير النظام الرئيسي' : 'موظف الاستقبال الافتراضي';
+        }
+        return u;
+      });
+    }
+    return db;
   } catch (err) {
     console.error('Error reading database file, returning default schema:', err);
     return defaultDb;
@@ -219,33 +174,92 @@ app.get('/api/health', (req, res) => {
 
 // 1. AUTHENTICATION & SECURITY
 app.post('/api/auth/login', (req, res) => {
-  const { username, password, receptionistName } = req.body;
-  const db = readDb();
-  
-  // Quick credentials logic
-  if (username === '123' && password === db.system_settings.admin_password) {
-    // Admin login
-    return res.json({
-      success: true,
-      role: 'admin',
-      token: 'admin-super-secret-token',
-      receptionistName: null
-    });
-  } 
-  
-  if (username === 'receptionist' && password === 'receptionist') {
-    if (db.system_settings.receptionist_name_required && !receptionistName) {
-      return res.status(400).json({ success: false, error: 'يجب إدخال اسم موظف الاستقبل لتسجيل الدخول.' });
-    }
-    return res.json({
-      success: true,
-      role: 'receptionist',
-      token: 'receptionist-secret-token',
-      receptionistName: receptionistName || 'موظف الاستقبال'
-    });
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(405).json({ success: false, error: 'الرجاء إدخال اسم المستخدم وكلمة المرور' });
   }
-  
-  res.status(401).json({ success: false, error: 'بيانات الدخول غير صحيحة.' });
+
+  const db = readDb();
+  const users = db.users || [];
+
+  const foundUser = users.find(
+    u => u.username.trim().toLowerCase() === username.trim().toLowerCase() && u.password.trim() === password.trim()
+  );
+
+  if (!foundUser) {
+    return res.status(401).json({ success: false, error: 'اسم المستخدم أو كلمة المرور غير صحيحة.' });
+  }
+
+  const empName = foundUser.employee_name || foundUser.username;
+
+  return res.json({
+    success: true,
+    role: foundUser.role,
+    token: `${foundUser.role}-${foundUser.id}`,
+    receptionistName: empName
+  });
+});
+
+// Dynamic User Management API
+app.get('/api/users', (req, res) => {
+  const db = readDb();
+  const usersList = (db.users || []).map(u => ({
+    id: u.id,
+    username: u.username,
+    role: u.role,
+    employee_name: u.employee_name || u.username,
+    created_at: u.created_at
+  }));
+  res.json(usersList);
+});
+
+app.post('/api/users', (req, res) => {
+  const { username, password, role, employee_name } = req.body;
+  if (!username || !password || !role) {
+    return res.status(400).json({ error: 'الرجاء إدخال اسم المستخدم وكلمة المرور واختيار الصلاحية' });
+  }
+
+  const db = readDb();
+  if (!db.users) db.users = [];
+
+  const exists = db.users.some(u => u.username.trim().toLowerCase() === username.trim().toLowerCase());
+  if (exists) {
+    return res.status(400).json({ error: 'اسم المستخدم هذا مسجل مسبقاً.' });
+  }
+
+  const newUser = {
+    id: `user-${Date.now()}`,
+    username: username.trim(),
+    password: password.trim(),
+    role: role,
+    employee_name: employee_name ? employee_name.trim() : (role === 'admin' ? 'مدير نظام جديد' : 'موظف استقبال جديد'),
+    created_at: new Date().toISOString()
+  };
+
+  db.users.push(newUser);
+  writeDb(db);
+
+  res.status(201).json({ id: newUser.id, username: newUser.username, role: newUser.role, employee_name: newUser.employee_name });
+});
+
+app.delete('/api/users/:id', (req, res) => {
+  const { id } = req.params;
+  const db = readDb();
+  if (!db.users) db.users = [];
+
+  const userToDelete = db.users.find(u => u.id === id);
+  if (!userToDelete) {
+    return res.status(404).json({ error: 'المستخدم غير موجود' });
+  }
+
+  const admins = db.users.filter(u => u.role === 'admin');
+  if (userToDelete.role === 'admin' && admins.length <= 1) {
+    return res.status(400).json({ error: 'لا يمكن حذف آخر مدير نظام للوحة التحكم لتفادي غلق الحساب.' });
+  }
+
+  db.users = db.users.filter(u => u.id !== id);
+  writeDb(db);
+  res.json({ success: true });
 });
 
 // 2. DOCTORS ENDPOINTS (CRUD)
@@ -314,7 +328,7 @@ app.get('/api/schedules', (req, res) => {
 });
 
 app.post('/api/schedules', (req, res) => {
-  const { doctor_id, day_of_week, max_capacity, start_time, end_time } = req.body;
+  const { doctor_id, day_of_week, max_capacity, shift } = req.body;
   const db = readDb();
   
   // Valid working days constraint Sat-Thu (0-5)
@@ -322,10 +336,14 @@ app.post('/api/schedules', (req, res) => {
     return res.status(400).json({ error: 'عذراً، الجمعة يوم إجازة رسمي ولا بمكن الإضافة ضمنه.' });
   }
 
-  // Check unique constraints: (doctor_id, day_of_week)
-  const isDuplicate = db.schedules.some(s => s.doctor_id === doctor_id && s.day_of_week === day_of_week);
+  // Map shift to start and end times
+  const start_time = shift === 'evening' ? '15:00' : '09:00';
+  const end_time = shift === 'evening' ? '19:00' : '13:00';
+
+  // Check unique constraints: (doctor_id, day_of_week, start_time)
+  const isDuplicate = db.schedules.some(s => s.doctor_id === doctor_id && s.day_of_week === day_of_week && s.start_time === start_time);
   if (isDuplicate) {
-    return res.status(400).json({ error: 'عذراً، هذا اليوم مجدول مسبقاً لهذا الطبيب.' });
+    return res.status(400).json({ error: 'عذراً، هذه الفترة (الصباحية أو المسائية) مجدولة مسبقاً لهذا الطبيب في هذا اليوم.' });
   }
 
   const capacity = parseInt(max_capacity) || 15;
@@ -335,8 +353,8 @@ app.post('/api/schedules', (req, res) => {
     day_of_week: parseInt(day_of_week),
     max_capacity: capacity,
     available_capacity: capacity,
-    start_time: start_time || '09:00',
-    end_time: end_time || '13:00'
+    start_time,
+    end_time
   };
   db.schedules.push(newSch);
   writeDb(db);

@@ -23,8 +23,7 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
   const [doctorId, setDoctorId] = useState('');
   const [dayOfWeek, setDayOfWeek] = useState(0); // Sat by default
   const [maxCapacity, setMaxCapacity] = useState(15);
-  const [startTime, setStartTime] = useState('09:00');
-  const [endTime, setEndTime] = useState('13:00');
+  const [shift, setShift] = useState<'morning' | 'evening'>('morning');
   const [editingId, setEditingId] = useState<string | null>(null);
 
   // Quick inline capacity editing states
@@ -55,8 +54,7 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
     setDoctorId('');
     setDayOfWeek(0);
     setMaxCapacity(15);
-    setStartTime('09:00');
-    setEndTime('13:00');
+    setShift('morning');
     setEditingId(null);
   };
 
@@ -68,12 +66,15 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
     setError('');
     setSuccess('');
 
+    const targetStartTime = shift === 'evening' ? '15:00' : '09:00';
+    const targetEndTime = shift === 'evening' ? '19:00' : '13:00';
+
     try {
       if (editingId) {
-        await onEditSchedule(editingId, { max_capacity: maxCapacity, start_time: startTime, end_time: endTime });
+        await onEditSchedule(editingId, { max_capacity: maxCapacity, start_time: targetStartTime, end_time: targetEndTime });
         setSuccess('تم تعديل زمن وطاقة العيادة بنجاح! ⏱️');
       } else {
-        await onAddSchedule({ doctor_id: doctorId, day_of_week: dayOfWeek, max_capacity: maxCapacity, start_time: startTime, end_time: endTime });
+        await onAddSchedule({ doctor_id: doctorId, day_of_week: dayOfWeek, max_capacity: maxCapacity, start_time: targetStartTime, end_time: targetEndTime });
         setSuccess('تم إضافة الموعد الأسبوعي المتكرر للطبيب بنجاح! 🗓️');
       }
       resetForm();
@@ -89,8 +90,7 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
     setDoctorId(s.doctor_id);
     setDayOfWeek(s.day_of_week);
     setMaxCapacity(s.max_capacity);
-    setStartTime(s.start_time);
-    setEndTime(s.end_time);
+    setShift(s.start_time === '15:00' ? 'evening' : 'morning');
   };
 
   const handleDeleteClick = async (id: string) => {
@@ -184,31 +184,18 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1.5">موعد البدء</label>
-                    <input
-                      id="sch-start-time-input"
-                      type="text"
-                      required
-                      placeholder="09:00"
-                      value={startTime}
-                      onChange={(e) => setStartTime(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 text-slate-800 rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1.5">موعد الانتهاء</label>
-                    <input
-                      id="sch-end-time-input"
-                      type="text"
-                      required
-                      placeholder="13:00"
-                      value={endTime}
-                      onChange={(e) => setEndTime(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 text-slate-800 rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all"
-                    />
-                  </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 mb-1.5">الفترة الزمنية (الوردية/الدوام)</label>
+                  <select
+                    id="sch-shift-select"
+                    required
+                    value={shift}
+                    onChange={(e) => setShift(e.target.value as 'morning' | 'evening')}
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 text-slate-800 rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all"
+                  >
+                    <option value="morning">صباحية (Morning)</option>
+                    <option value="evening">مسائية (Evening)</option>
+                  </select>
                 </div>
 
                 <div>
@@ -249,139 +236,155 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
         </div>
 
         {/* LEFT PANEL: Table List */}
-        <div className="lg:col-span-2">
-          <div id="schedules-list-panel" className="bg-white border border-slate-100 rounded-2xl shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-sm font-black text-slate-800 font-sans">جدول الدوام الأسبوعي المتكرر ({schedules.length})</h3>
-              <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-105">السبت - الخميس</span>
-            </div>
-
-            <div className="overflow-x-auto">
-              {schedules.length === 0 ? (
-                <div id="no-schedules" className="p-8 text-center text-slate-400 text-xs">
-                  لا توجد عيادات مجدولة طيلة هذا الأسبوع. يمكنك إضافة عيادة جديدة للأطباء من النموذج اليميني.
-                </div>
-              ) : (
-                <table id="schedules-table" className="min-w-full divide-y divide-slate-100">
-                  <thead className="bg-slate-55/70">
-                    <tr>
-                      <th className="px-4 py-3 text-right text-xs font-black text-slate-500">اسم الطبيب</th>
-                      <th className="px-4 py-3 text-right text-xs font-black text-slate-500">يوم العيادة</th>
-                      <th className="px-4 py-3 text-right text-xs font-black text-slate-500">التوقيت</th>
-                      <th className="px-4 py-3 text-center text-xs font-black text-slate-500">السعة المتاحة</th>
-                      <th className="px-2 py-3 text-center text-xs font-black text-slate-500">التحكم</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 bg-white">
-                    {schedules.map((s) => (
-                      <tr key={s.id} id={`sch-row-${s.id}`} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="text-xs font-black text-slate-800">{s.doctor_name}</div>
-                          <div className="text-[10px] text-slate-400">{s.doctor_specialty}</div>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <span className="inline-flex px-2 py-0.5 text-[10px] font-black bg-blue-50 text-blue-700 rounded border border-blue-100">
-                            {ARABIC_DAYS[s.day_of_week]}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="flex items-center text-[11px] text-slate-600 font-bold font-mono">
-                            <Clock className="h-3 w-3 text-slate-400 ml-1" />
-                            {s.start_time} - {s.end_time}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-center">
-                          {editingCapacityId === s.id ? (
-                            <div className="flex items-center justify-center gap-1">
-                              <input
-                                type="number"
-                                min="1"
-                                max="100"
-                                value={tempCapacity}
-                                onChange={(e) => setTempCapacity(parseInt(e.target.value) || 0)}
-                                className="w-12 px-1 py-0.5 text-xs text-center bg-slate-50 border border-slate-300 rounded font-mono"
-                              />
-                              <button
-                                onClick={() => handleSaveCapacity(s.id, s.start_time, s.end_time)}
-                                className="p-1 text-emerald-600 hover:bg-emerald-50 rounded border border-emerald-200"
-                                title="حفظ"
-                              >
-                                <Check className="h-3 w-3" />
-                              </button>
-                              <button
-                                onClick={() => setEditingCapacityId(null)}
-                                className="p-1 text-slate-400 hover:bg-slate-50 rounded border border-slate-200 text-[9px]"
-                                title="إلغاء"
-                              >
-                                إلغاء
-                              </button>
-                            </div>
-                          ) : (
-                            <div>
-                              <div className="inline-flex items-center justify-center">
-                                <span className="text-xs font-black text-slate-800 font-mono">{s.available_capacity}</span>
-                                <span className="text-[10px] text-slate-405 font-mono px-0.5">/</span>
-                                <span className="text-[10px] text-slate-500 font-mono font-bold">{s.max_capacity}</span>
-                                {isAdmin && (
-                                  <button
-                                    onClick={() => {
-                                      setEditingCapacityId(s.id);
-                                      setTempCapacity(s.max_capacity);
-                                    }}
-                                    className="mr-1.5 p-0.5 text-slate-400 hover:text-blue-600 rounded"
-                                    title="تعديل السعة سريعاً"
-                                  >
-                                    <Edit2 className="h-3 w-3" />
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                          {s.available_capacity === 0 ? (
-                            <span className="block text-[8px] font-bold text-red-500 leading-none mt-1">
-                              مكتمل السعة 🚫
-                            </span>
-                          ) : (
-                            <div className="w-12 bg-slate-105 h-1.5 rounded-full overflow-hidden mx-auto mt-1">
-                              <div
-                                className="bg-blue-600 h-1.5"
-                                style={{ width: `${(s.available_capacity / s.max_capacity) * 100}%` }}
-                              />
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-2 py-3 whitespace-nowrap text-center text-xs">
-                          {isAdmin ? (
-                            <div className="flex items-center justify-center space-x-2 space-x-reverse">
-                              <button
-                                id={`edit-sch-${s.id}`}
-                                onClick={() => handleEditClick(s)}
-                                className="p-1 px-1.5 text-[10px] text-blue-500 hover:bg-blue-50 rounded border border-blue-100 transition-all"
-                              >
-                                تحرير
-                              </button>
-                              <button
-                                id={`del-sch-${s.id}`}
-                                onClick={() => handleDeleteClick(s.id)}
-                                className="p-1 text-red-500 hover:bg-red-50 rounded border border-red-100 transition-all"
-                                title="حذف الجدول"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="inline-flex items-center text-[9px] font-bold text-slate-400 bg-slate-50 border border-slate-150 rounded px-1.5 py-0.5">
-                              للعرض فقط 👁️
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+        <div className="lg:col-span-2 space-y-6">
+          <div className="bg-slate-100/65 p-3.5 rounded-xl border border-slate-200/50 flex items-center justify-between">
+            <h3 className="text-sm font-bold text-slate-800 font-sans">جداول الدوام التفصيلية حسب الأطباء ({doctors.length})</h3>
+            <span className="text-[10px] font-black text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-100">السبت - الخميس</span>
           </div>
+
+          {doctors.length === 0 ? (
+            <div className="bg-white p-8 text-center text-slate-400 text-xs rounded-2xl border border-slate-100">
+              لا توجد أطباء مسجلين لعرض جداولهم. يرجى إضافة طبيب في البداية.
+            </div>
+          ) : (
+            doctors.map((doc) => {
+              const docSchedules = schedules.filter(s => s.doctor_id === doc.id);
+              return (
+                <div key={doc.id} className="bg-white border border-slate-150 rounded-2xl shadow-sm overflow-hidden p-4 space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                    <div className="flex items-center gap-2">
+                      <div className="h-2 w-2 rounded-full bg-blue-600" />
+                      <h4 className="text-xs font-black text-slate-800">
+                        جدول دوام الدكتور: <span className="text-blue-700 font-black">{doc.name}</span> <span className="text-slate-400 font-normal">({doc.specialty})</span>
+                      </h4>
+                    </div>
+                    <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full border border-slate-200">
+                      مستشفى برج الأطباء
+                    </span>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    {docSchedules.length === 0 ? (
+                      <div className="py-5 text-center text-slate-400 text-[10px] border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+                        لا توجد فترات دوام مجدولة للدكتور {doc.name} حالياً.
+                      </div>
+                    ) : (
+                      <table className="min-w-full divide-y divide-slate-100 text-right">
+                        <thead className="bg-slate-50/80">
+                          <tr>
+                            <th className="px-3 py-2 text-right text-xs font-black text-slate-500">يوم العيادة</th>
+                            <th className="px-3 py-2 text-right text-xs font-black text-slate-500">الفترة (الوردية)</th>
+                            <th className="px-3 py-2 text-center text-xs font-black text-slate-500">السعة المتاحة</th>
+                            <th className="px-3 py-2 text-center text-xs font-black text-slate-500">التحكم والعمليات</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 bg-white">
+                          {docSchedules.map((s) => (
+                            <tr key={s.id} className="hover:bg-slate-50/40 transition-colors">
+                              <td className="px-3 py-2.5 whitespace-nowrap">
+                                <span className="inline-flex px-2 py-0.5 text-[10px] font-black bg-blue-50 text-blue-700 rounded border border-blue-100">
+                                  {ARABIC_DAYS[s.day_of_week]}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2.5 whitespace-nowrap">
+                                <div className="flex items-center text-xs text-slate-700 font-bold">
+                                  <Clock className="h-3.5 w-3.5 text-slate-400 ml-1.5 shrink-0" />
+                                  {s.start_time === '15:00' ? 'مسائية (Evening)' : 'صباحية (Morning)'}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2.5 whitespace-nowrap text-center">
+                                {editingCapacityId === s.id ? (
+                                  <div className="flex items-center justify-center gap-1.5">
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="100"
+                                      value={tempCapacity}
+                                      onChange={(e) => setTempCapacity(parseInt(e.target.value) || 0)}
+                                      className="w-12 px-1 py-0.5 text-xs text-center bg-slate-50 border border-slate-300 rounded font-mono"
+                                    />
+                                    <button
+                                      onClick={() => handleSaveCapacity(s.id, s.start_time, s.end_time)}
+                                      className="p-1 text-emerald-600 hover:bg-emerald-50 rounded border border-emerald-200"
+                                      title="حفظ"
+                                    >
+                                      <Check className="h-3 w-3" />
+                                    </button>
+                                    <button
+                                      onClick={() => setEditingCapacityId(null)}
+                                      className="p-1 text-slate-400 hover:bg-slate-100 text-[10px] rounded animate-fade-in"
+                                      title="إلغاء"
+                                    >
+                                      تراجع
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <div className="inline-flex items-center justify-center">
+                                      <span className="text-xs font-black text-slate-800 font-mono">{s.available_capacity}</span>
+                                      <span className="text-[10px] text-slate-400 font-mono px-0.5">/</span>
+                                      <span className="text-[10px] text-slate-500 font-mono font-bold">{s.max_capacity}</span>
+                                      {isAdmin && (
+                                        <button
+                                          onClick={() => {
+                                            setEditingCapacityId(s.id);
+                                            setTempCapacity(s.max_capacity);
+                                          }}
+                                          className="mr-1.5 p-0.5 text-slate-400 hover:text-blue-600 rounded"
+                                          title="تعديل السعة سريعاً"
+                                        >
+                                          <Edit2 className="h-3 w-3" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                                {s.available_capacity === 0 ? (
+                                  <span className="block text-[8px] font-bold text-red-500 leading-none mt-1">
+                                    مكتمل السعة 🚫
+                                  </span>
+                                ) : (
+                                  <div className="w-12 bg-slate-100 h-1 rounded-full overflow-hidden mx-auto mt-1">
+                                    <div
+                                      className="bg-blue-600 h-1"
+                                      style={{ width: `${(s.available_capacity / s.max_capacity) * 100}%` }}
+                                    />
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-3 py-2.5 whitespace-nowrap text-center text-xs">
+                                {isAdmin ? (
+                                  <div className="flex items-center justify-center space-x-1.5 space-x-reverse">
+                                    <button
+                                      onClick={() => handleEditClick(s)}
+                                      className="p-1 px-2 text-[10px] text-blue-500 hover:bg-blue-50 rounded border border-blue-100 transition-all font-bold"
+                                    >
+                                      تحرير
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteClick(s.id)}
+                                      className="p-1 text-red-500 hover:bg-red-50 rounded border border-red-100 transition-all"
+                                      title="حذف الجدول"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <span className="inline-flex items-center text-[9px] font-bold text-slate-400 bg-slate-50 border border-slate-100 rounded px-1.5 py-0.5">
+                                    للعرض فقط 👁️
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
     </div>

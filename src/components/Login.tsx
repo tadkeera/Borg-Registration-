@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { HOSPITAL_LOGO } from '../utils/constants';
-import { Shield, User, Loader2 } from 'lucide-react';
+import { Shield, User, Loader2, Key } from 'lucide-react';
 
 interface LoginProps {
   onLoginSuccess: (role: 'admin' | 'receptionist', token: string, name: string | null) => void;
@@ -13,8 +13,8 @@ interface LoginProps {
 
 export default function Login({ onLoginSuccess }: LoginProps) {
   const [role, setRole] = useState<'admin' | 'receptionist'>('admin');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -25,12 +25,9 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
     // Prepare body
     const body: Record<string, any> = {
-      username: role === 'admin' ? '123' : 'receptionist',
-      password: role === 'admin' ? password : 'receptionist',
+      username: username.trim(),
+      password: password.trim(),
     };
-    if (role === 'receptionist') {
-      body.receptionistName = name.trim();
-    }
 
     try {
       const response = await fetch('/api/auth/login', {
@@ -41,7 +38,12 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || 'فشلت عملية تسجيل الدخول.');
+        throw new Error(data.error || 'بيانات الدخول غير صحيحة.');
+      }
+
+      // Quick roles validation to match requested toggle state
+      if (data.role !== role) {
+        throw new Error(`الحساب المدخل خاص بصلاحية "${data.role === 'admin' ? 'مدير النظام' : 'موظف الاستقبال'}"، يرجى تغيير التبويب للتسجيل.`);
       }
 
       onLoginSuccess(data.role, data.token, data.receptionistName);
@@ -79,8 +81,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             <button
               id="set-admin-btn"
               type="button"
-              onClick={() => { setRole('admin'); setError(''); }}
-              className={`flex-1 flex items-center justify-center py-2.5 text-sm font-bold rounded-lg transition-all ${
+              onClick={() => { setRole('admin'); setUsername(''); setPassword(''); setError(''); }}
+              className={`flex-1 flex items-center justify-center py-2.5 text-sm font-bold rounded-lg transition-all cursor-pointer ${
                 role === 'admin'
                   ? 'bg-white text-blue-700 shadow-sm'
                   : 'text-slate-500 hover:text-slate-700'
@@ -92,8 +94,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             <button
               id="set-rec-btn"
               type="button"
-              onClick={() => { setRole('receptionist'); setError(''); }}
-              className={`flex-1 flex items-center justify-center py-2.5 text-sm font-bold rounded-lg transition-all ${
+              onClick={() => { setRole('receptionist'); setUsername(''); setPassword(''); setError(''); }}
+              className={`flex-1 flex items-center justify-center py-2.5 text-sm font-bold rounded-lg transition-all cursor-pointer ${
                 role === 'receptionist'
                   ? 'bg-white text-blue-700 shadow-sm'
                   : 'text-slate-500 hover:text-slate-700'
@@ -111,67 +113,48 @@ export default function Login({ onLoginSuccess }: LoginProps) {
               </div>
             )}
 
-            {role === 'admin' ? (
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1.5">
-                  رقم المرور للمدير (الافتراضي: 123)
-                </label>
-                <input
-                  id="admin-passwd-input"
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-sm rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                  placeholder="أدخل كلمة المرور"
-                  disabled={loading}
-                />
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1.5">
-                    اسم موظف الاستقبال الثنائي
-                  </label>
-                  <input
-                    id="rec-name-input"
-                    type="text"
-                    required
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-sm rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                    placeholder="مثال: صالح الأحمد"
-                    disabled={loading}
-                  />
-                  <p className="mt-1 text-[10px] text-slate-400">
-                    * حقل إلزامي لتوثيق التسجيل وحفظ التقارير.
-                  </p>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 mb-1.5">
-                    كلمة مرور موظف الاستقبال (تلقائية ومفتوحة)
-                  </label>
-                  <input
-                    id="rec-passwd-placeholder"
-                    type="text"
-                    disabled
-                    value="دخول مباشر كعرض فقط"
-                    className="w-full px-3.5 py-2.5 bg-slate-100 border border-slate-200 text-slate-400 text-xs rounded-xl cursor-not-allowed"
-                  />
-                </div>
-              </div>
-            )}
+            <div>
+              <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                اسم المستخدم (Username)
+              </label>
+              <input
+                id="login-username"
+                type="text"
+                required
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-sm rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                placeholder={role === 'admin' ? "مثال: admin" : "مثال: receptionist"}
+                disabled={loading}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                كلمة المرور (Password)
+              </label>
+              <input
+                id="login-password"
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-sm rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                placeholder="أدخل كلمة المرور الخاصة بك"
+                disabled={loading}
+              />
+            </div>
 
             <button
               id="submit-login-btn"
               type="submit"
               disabled={loading}
-              className="w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-md text-sm font-black text-white bg-blue-700 hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-md text-sm font-black text-white bg-blue-700 hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               {loading ? (
                 <>
                   <Loader2 className="animate-spin h-5 w-5 ml-2" />
-                  جاري تسجيل الدخول...
+                  جاري التحقق...
                 </>
               ) : (
                 'ولوج لوحة الإدارة 🔓'

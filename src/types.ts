@@ -85,6 +85,15 @@ export interface WhatsAppLog {
   timestamp: string; // ISO string
 }
 
+export interface User {
+  id: string;
+  username: string;
+  password: string;
+  role: 'admin' | 'receptionist';
+  employee_name?: string;
+  created_at?: string;
+}
+
 export interface DbState {
   doctors: Doctor[];
   schedules: Schedule[];
@@ -93,4 +102,5 @@ export interface DbState {
   system_settings: SystemSettings;
   bot_sessions: Record<string, BotSession>;
   whatsapp_logs: WhatsAppLog[];
+  users?: User[];
 }

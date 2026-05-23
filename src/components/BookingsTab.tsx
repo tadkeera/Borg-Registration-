@@ -5,13 +5,13 @@
 
 import React, { useState } from 'react';
 import { Booking, Doctor, Schedule, BookingStatus, PaymentStatus } from '../types';
-import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleAlert, PlusSquare, Trash2, X, CheckSquare, Coins, CalendarDays, Key, Hospital } from 'lucide-react';
+import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleAlert, PlusSquare, Trash2, X, CheckSquare, Coins, CalendarDays, Key, Hospital, ArrowLeft, Clock, AlertTriangle, CheckCircle, ChevronLeft } from 'lucide-react';
 import { HOSPITAL_LOGO } from '../utils/constants';
 
 function getYemenTime(): Date {
   const now = new Date();
   const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-  return new Date(utc + (3600000 * 3)); // Yemen is UTC + 3
+  return new Date(utc + (3600000 * 3)); // Yemen UTC+3
 }
 
 interface BookingsTabProps {
@@ -29,28 +29,103 @@ const ARABIC_DAYS = ['السبت', 'الأحد', 'الإثنين', 'الثلاث
 
 export default function BookingsTab({ bookings, doctors, schedules, role, receptionistName, onAddBooking, onEditBooking, onDeleteBooking }: BookingsTabProps) {
   const isAdmin = role === 'admin';
+  const [selectedSchId, setSelectedSchId] = useState<string | null>(null);
+
+  // Filters for selected scheduler's bookings
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [paymentFilter, setPaymentFilter] = useState<string>('all');
 
-  // Manual booking states
+  // Manual booking modal
   const [showAddModal, setShowAddModal] = useState(false);
-  const [selectedDocId, setSelectedDocId] = useState('');
-  const [selectedSchId, setSelectedSchId] = useState('');
-  const [patientName, setPatientName] = useState('');
-  const [patientPhone, setPatientPhone] = useState('');
-  const [bookingDate, setBookingDate] = useState('');
+  const [manualName, setManualName] = useState('');
+  const [manualPhone, setManualPhone] = useState('967');
+  const [manualDate, setManualDate] = useState(getYemenTime().toISOString().split('T')[0]);
 
-  // Ticket Modal States
+  // Ticket modal
   const [activeTicket, setActiveTicket] = useState<Booking | null>(null);
 
-  // Loaders
+  // States
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  // Sorter / Filtered Bookings
+  // Handle manual booking submit
+  const handleManualBookingSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedSchId) return;
+
+    const sch = schedules.find(s => s.id === selectedSchId);
+    if (!sch) return;
+
+    setLoading(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      if (!manualName.trim() || !manualPhone.trim() || !manualDate) {
+        throw new Error('يرجى ملء كافة حقول التسجيل الأساسية.');
+      }
+
+      await onAddBooking({
+        doctor_id: sch.doctor_id,
+        schedule_id: sch.id,
+        patient_name: manualName.trim(),
+        patient_phone: manualPhone.trim(),
+        booking_date: manualDate
+      });
+
+      setSuccess('🎉 تم إضافة حجز المريض وتوليد رقم الدور بنجاح!');
+      setManualName('');
+      setManualPhone('967');
+
+      setTimeout(() => {
+        setShowAddModal(false);
+        setSuccess('');
+      }, 1500);
+    } catch (err: any) {
+      setError(err.message || 'فشلت معالجة الحجز اليدوي.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUpdateStatus = async (id: string, status: BookingStatus) => {
+    try {
+      await onEditBooking(id, { status });
+    } catch (err: any) {
+      alert(err.message || 'فشل تحديث حالة الحجز.');
+    }
+  };
+
+  const handleUpdatePayment = async (id: string, payment_status: PaymentStatus) => {
+    try {
+      await onEditBooking(id, { payment_status });
+    } catch (err: any) {
+      alert(err.message || 'فشل تحديث حالة السداد.');
+    }
+  };
+
+  const handleDeleteClick = async (id: string) => {
+    if (!confirm('هل أنت متأكد من رغبتك في حذف هذا الحجز نهائياً من سجلات العيادة؟')) return;
+    try {
+      await onDeleteBooking(id);
+    } catch (err: any) {
+      alert(err.message || 'فشل حذف السجل.');
+    }
+  };
+
+  // Helper to get doctor corresponding to schedule
+  const getDoctorForSchedule = (sch: Schedule) => {
+    return doctors.find(d => d.id === sch.doctor_id);
+  };
+
+  // Filter patients booked on the selected doctor's schedule
+  const currentSchedule = schedules.find(s => s.id === selectedSchId);
+  const selectedDoctor = currentSchedule ? getDoctorForSchedule(currentSchedule) : null;
+
   const filteredBookings = bookings.filter(b => {
+    if (b.schedule_id !== selectedSchId) return false;
     const matchesSearch = b.patient_name.toLowerCase().includes(search.toLowerCase()) || 
                           b.patient_phone.includes(search);
     const matchesStatus = statusFilter === 'all' || b.status === statusFilter;
@@ -58,537 +133,505 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
     return matchesSearch && matchesStatus && matchesPayment;
   });
 
-  const handleManualBookingSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-    setSuccess('');
-
-    try {
-      if (!selectedDocId || !selectedSchId || !patientName.trim() || !patientPhone.trim() || !bookingDate) {
-        throw new Error('يرجى ملء جميع الحقول المطلوبة.');
-      }
-
-      await onAddBooking({
-        doctor_id: selectedDocId,
-        schedule_id: selectedSchId,
-        patient_name: patientName.trim(),
-        patient_phone: patientPhone.trim(),
-        booking_date: bookingDate
-      });
-
-      setSuccess('🎉 تم تسجيل الحجز اليدوي وحساب رقم الدور بنجاح!');
-      // Reset
-      setPatientName('');
-      setPatientPhone('');
-      setSelectedDocId('');
-      setSelectedSchId('');
-      setBookingDate('');
-      
-      // Close modal after lag
-      setTimeout(() => {
-        setShowAddModal(false);
-        setSuccess('');
-      }, 1500);
-    } catch (err: any) {
-      setError(err.message || 'فشلت إضافة الحجز اليدوي.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleUpdateStatus = async (id: string, status: BookingStatus) => {
-    if (!isAdmin) return;
-    try {
-      await onEditBooking(id, { status });
-    } catch (err: any) {
-      alert(err.message || 'فشل تحديث الحالة.');
-    }
-  };
-
-  const handleUpdatePayment = async (id: string, payment_status: PaymentStatus) => {
-    if (!isAdmin) return;
-    try {
-      await onEditBooking(id, { payment_status, status: payment_status === 'paid' ? 'confirmed' : undefined });
-    } catch (err: any) {
-      alert(err.message || 'فشل تحديث حالة الدفع.');
-    }
-  };
-
-  const handleDeleteBooking = async (id: string) => {
-    if (!isAdmin) return;
-    if (!confirm('هل أنت متأكد من حذف هذا الحجز نهائياً من قاعدة البيانات وإخلاء سعة المقعد؟')) return;
-    try {
-      await onDeleteBooking(id);
-    } catch (err: any) {
-      alert(err.message || 'فشل حذف الحجز.');
-    }
-  };
-
-  // Safe helper to obtain available schedules for the chosen doctor in modal
-  const filteredSchedules = schedules.filter(s => s.doctor_id === selectedDocId);
-
-  // Print ticket content using browser printing or structured modal
-  const triggerPrint = () => {
-    window.print();
-  };
-
   return (
-    <div id="bookings-tab-container" className="space-y-6" dir="rtl">
-      {/* Upper Restriction Notice */}
-      {!isAdmin && (
-        <div id="book-restriction-alert" className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-center justify-between text-amber-800 text-xs font-bold shadow-sm">
-          <div className="flex items-center">
-            <ShieldAlert className="h-4.5 w-4.5 ml-2 text-amber-600 shrink-0" />
-            <span>تسجيل المخدم: بصفتك موظف الاستقبال *({receptionistName})*، تم تثبيت وضع المشاهدة (للعرض فقط 👁️). لا تملك صلاحيات إضافة أو تعديل أو إلغاء حجوزات المرضى.</span>
+    <div id="bookings-tab-layout" className="space-y-6 font-sans" dir="rtl">
+      
+      {/* 1. MASTER VIEW: Doctor schedule cards */}
+      {!selectedSchId ? (
+        <div className="space-y-6">
+          <div className="border-b border-indigo-100/40 pb-4">
+            <h2 className="text-lg font-black text-slate-800 flex items-center gap-1.5">
+              <Hospital className="h-5 w-5 text-blue-700" />
+              سجل معاينات الأطباء والعيادات المتاحة
+            </h2>
+            <p className="text-xs text-slate-500 mt-1 font-bold">
+              اضغط على كرت الطبيب أدناه لاستعراض وتوثيق ملفات المرضى المسجلين ووضع أدوار الحجز.
+            </p>
           </div>
-          <span className="px-2 py-0.5 bg-amber-100 rounded-full border border-amber-300">للعرض فقط</span>
+
+          {schedules.length === 0 ? (
+            <div className="bg-white p-8 rounded-2xl border border-dashed border-slate-200 text-center text-slate-400 text-xs">
+              لا توجد عيادات أو فترات مجدولة حالياً للأطباء في لوحة الإدارة.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {schedules.map((sch) => {
+                const doc = getDoctorForSchedule(sch);
+                if (!doc) return null;
+                const isFull = sch.available_capacity === 0;
+                const shiftText = sch.start_time === '15:00' ? 'فترة مسائية (Evening)' : 'فترة صباحية (Morning)';
+
+                // Define distinct border color and 3D shadow styling based on doctor's specialty
+                const getDoctorDesign = (specialty: string) => {
+                  const s = specialty || '';
+                  if (s.includes('أطفال') || s.includes('الأطفال')) {
+                    return 'border-r-4 border-r-amber-500 shadow-[0_8px_30px_rgba(245,158,11,0.06)] hover:shadow-[0_20px_40px_rgba(245,158,11,0.13)]';
+                  }
+                  if (s.includes('نساء') || s.includes('ولادة') || s.includes('توليد') || s.includes('النساء')) {
+                    return 'border-r-4 border-r-rose-500 shadow-[0_8px_30px_rgba(244,63,94,0.06)] hover:shadow-[0_20px_40px_rgba(244,63,94,0.13)]';
+                  }
+                  if (s.includes('باطنية') || s.includes('باطني') || s.includes('قلب') || s.includes('جراحة')) {
+                    return 'border-r-4 border-r-indigo-500 shadow-[0_8px_30px_rgba(99,102,241,0.06)] hover:shadow-[0_20px_40px_rgba(99,102,241,0.13)]';
+                  }
+                  if (s.includes('أذن') || s.includes('عيون') || s.includes('جلدية')) {
+                    return 'border-r-4 border-r-emerald-500 shadow-[0_8px_30px_rgba(16,185,129,0.06)] hover:shadow-[0_20px_40px_rgba(16,185,129,0.13)]';
+                  }
+                  return 'border-r-4 border-r-blue-600 shadow-[0_8px_30px_rgba(37,99,235,0.06)] hover:shadow-[0_20px_40px_rgba(37,99,235,0.13)]';
+                };
+
+                const cardDesign = getDoctorDesign(doc.specialty);
+
+                return (
+                  <div
+                    key={sch.id}
+                    onClick={() => {
+                      setSelectedSchId(sch.id);
+                      setSearch('');
+                      setStatusFilter('all');
+                      setPaymentFilter('all');
+                    }}
+                    className={`bg-white rounded-2xl p-6 border border-slate-100 cursor-pointer hover:-translate-y-1.5 transform transition-all duration-300 space-y-4 relative overflow-hidden group ${cardDesign} ${
+                      isFull ? 'bg-red-50/15' : ''
+                    }`}
+                  >
+                    {/* Shift Indicators */}
+                    <div className="flex items-center justify-between">
+                      <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black tracking-wide uppercase ${
+                        sch.start_time === '15:00'
+                          ? 'bg-amber-50 text-amber-700 border border-amber-100'
+                          : 'bg-indigo-50 text-indigo-700 border border-indigo-100'
+                      }`}>
+                        {shiftText}
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-black flex items-center gap-1">
+                        <CalendarDays className="h-3.5 w-3.5 text-slate-400" />
+                        {ARABIC_DAYS[sch.day_of_week]}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1">
+                      <h3 className="text-sm font-black text-slate-800 group-hover:text-blue-700 transition-colors">
+                        {doc.name}
+                      </h3>
+                      <div className="flex items-center text-[10px] text-slate-500 font-bold gap-1 mt-1">
+                        <span className="text-slate-400">🧬 التخصص:</span>
+                        <span className="px-1.5 py-0.5 bg-slate-100 rounded text-slate-700">{doc.specialty}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-slate-100 pt-4">
+                      <div className="text-right">
+                        <span className="block text-[8px] uppercase tracking-wider text-slate-400 font-bold">الحصيلة العظمى</span>
+                        <span className="text-xs font-black text-slate-700 font-mono">{sch.max_capacity} حالات باليوم</span>
+                      </div>
+                      <div className="text-left font-sans">
+                        {isFull ? (
+                          <span className="inline-flex items-center justify-center bg-red-650 text-white text-[10px] font-black px-2.5 py-1 rounded-xl shadow-sm border border-red-500 animate-pulse">
+                            مكتمل السعة (Full) 🚫
+                          </span>
+                        ) : (
+                          <div className="text-left">
+                            <span className="block text-[8px] text-slate-400 font-black uppercase">الشواغر المتبقية</span>
+                            <span className="text-xs font-black font-mono text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
+                              {sch.available_capacity} شواغر متاحة
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Quick indicator arrow indicator inside back on hover */}
+                    <div className="absolute left-3 top-3 opacity-0 group-hover:opacity-100 transform -translate-x-1 group-hover:translate-x-0 transition-all duration-300">
+                      <ChevronLeft className="h-4.5 w-4.5 text-slate-400 hover:text-blue-700" />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : (
+        /* 2. DETAIL VIEW: Selected clinician's booked patients list */
+        <div className="space-y-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-slate-100 pb-4 gap-4">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSelectedSchId(null)}
+                className="p-1.5 hover:bg-slate-100 rounded-xl transition-all border border-slate-200 cursor-pointer"
+                title="الرجوع لقائمة الأطباء"
+              >
+                <ArrowLeft className="h-4.5 w-4.5 text-slate-600" />
+              </button>
+              <div>
+                <h2 className="text-lg font-black text-slate-800 flex items-center gap-1.5">
+                  حجوزات عيادة: {selectedDoctor?.name}
+                </h2>
+                <p className="text-xs text-slate-500 mt-1 font-bold">
+                  {selectedDoctor?.specialty} | {ARABIC_DAYS[currentSchedule!.day_of_week]} | الفترة {currentSchedule!.start_time === '15:00' ? 'المسائية' : 'الصباحية'}
+                </p>
+              </div>
+            </div>
+
+            {isAdmin && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowAddModal(true)}
+                  className="px-3 py-2 bg-blue-700 text-white text-xs font-black rounded-xl hover:bg-blue-800 flex items-center justify-center gap-1.5 shadow transition-all cursor-pointer"
+                >
+                  <PlusSquare className="h-4 w-4" />
+                  إدخال حجز لمريض جديد 🧑‍⚕️
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Table Filters Panel */}
+          <div className="bg-white p-4 border border-slate-100 rounded-2xl shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex-1 relative">
+              <Search className="absolute right-3.5 top-3 h-4 w-4 text-slate-400" />
+              <input
+                type="text"
+                placeholder="ابحث بالاسم الثلاثي للمريض، أو برقم الهاتف والوالحق..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full pl-4 pr-10 py-2 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-550 transition-all font-bold"
+              />
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Filter className="h-3.5 w-3.5 text-slate-400" />
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg focus:outline-none transition-all font-bold font-sans"
+                >
+                  <option value="all">كل الحالات (جميعها)</option>
+                  <option value="pending">⏳ معلق (Pending)</option>
+                  <option value="confirmed">👥 مؤكد (Confirmed)</option>
+                  <option value="cancelled">🚫 ملغي (Cancelled)</option>
+                </select>
+              </div>
+
+              <div>
+                <select
+                  value={paymentFilter}
+                  onChange={(e) => setPaymentFilter(e.target.value)}
+                  className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg focus:outline-none transition-all font-bold font-sans"
+                >
+                  <option value="all">كل الرسوم (مسدد/معلق)</option>
+                  <option value="paid">✅ مسدد خالص</option>
+                  <option value="pending">⏳ غير مسدد (معلق)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Bookings Table list */}
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              {filteredBookings.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 text-xs">
+                  لا توجد سجلات مطابقة للبحث أو معايير الفلترة المسندة لهذه العيادة واليوم.
+                </div>
+              ) : (
+                <table className="min-w-full text-right border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-[10px] font-black text-slate-404 uppercase tracking-wider border-b border-slate-100">
+                      <th className="px-4 py-3 text-right">رقم الدور (Queue)</th>
+                      <th className="px-4 py-3 text-right">اسم المريض</th>
+                      <th className="px-4 py-3 text-right">رقم الهاتف</th>
+                      <th className="px-4 py-3 text-center">حالة السداد</th>
+                      <th className="px-4 py-3 text-center">حالة الحجز</th>
+                      <th className="px-2 py-3 text-center">التوعية وتذكرة الحجز</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredBookings.map((b) => {
+                      const ageDiffMs = getYemenTime().getTime() - new Date(b.created_at || '').getTime();
+                      const spentHours = ageDiffMs / (3600000);
+                      const isExpiredPending = b.status === 'pending' && b.payment_status === 'pending' && spentHours >= 48;
+
+                      return (
+                        <tr key={b.id} className="hover:bg-slate-50/50 transition-colors text-xs text-slate-800">
+                          
+                          {/* Queue number */}
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <span className="inline-flex items-center justify-center h-7 w-7 rounded-lg bg-blue-50 border border-blue-100 text-xs font-black text-blue-700 font-mono">
+                              {b.queue_number}
+                            </span>
+                          </td>
+
+                          {/* Patient name */}
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <div className="font-sans font-black text-slate-800">{b.patient_name}</div>
+                            <div className="text-[9px] text-slate-400 mt-0.5">
+                              {b.verified_by_whatsapp ? (
+                                <span className="text-emerald-600 font-black">🤖 حجز بالبوت</span>
+                              ) : (
+                                <span className="text-blue-600 font-black">🏢 تسجيل يدوي</span>
+                              )}
+                              {receptionistName && <span className="text-slate-400 mr-1">• الموثق: {receptionistName}</span>}
+                            </div>
+                          </td>
+
+                          {/* Patient phone */}
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <span className="font-mono text-slate-600 font-bold">
+                              +{b.patient_phone}
+                            </span>
+                          </td>
+
+                          {/* Payment status */}
+                          <td className="px-4 py-3 whitespace-nowrap text-center">
+                            {isAdmin ? (
+                              <select
+                                value={b.payment_status}
+                                onChange={(e) => handleUpdatePayment(b.id, e.target.value as PaymentStatus)}
+                                className={`px-2 py-0.5 text-[10px] font-black rounded-md border focus:outline-none focus:ring-1.2 cursor-pointer ${
+                                  b.payment_status === 'paid'
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : b.payment_status === 'cancelled'
+                                    ? 'bg-red-50 text-red-700 border-red-200'
+                                    : 'bg-amber-50 text-amber-700 border-amber-200'
+                                }`}
+                              >
+                                <option value="pending">⏳ معلق</option>
+                                <option value="paid">✅ مسدد</option>
+                                <option value="cancelled">❌ ملغي</option>
+                              </select>
+                            ) : (
+                              <span className={`inline-flex px-25 py-0.5 rounded text-[10px] font-bold ${
+                                b.payment_status === 'paid'
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : 'bg-amber-50 text-amber-700'
+                              }`}>
+                                {b.payment_status === 'paid' ? 'خالص الرسوم' : 'معلق السداد'}
+                              </span>
+                            )}
+
+                            {isExpiredPending && (
+                              <span className="block text-[8px] font-bold text-red-500 mt-1 flex items-center justify-center animate-bounce">
+                                <CircleAlert className="h-2.5 w-2.5 ml-0.5" />
+                                تجاوز 48 ساعة! (انتهى)
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Visit status */}
+                          <td className="px-4 py-3 whitespace-nowrap text-center">
+                            {isAdmin ? (
+                              <select
+                                value={b.status}
+                                onChange={(e) => handleUpdateStatus(b.id, e.target.value as BookingStatus)}
+                                className={`px-2 py-0.5 text-[10px] font-black rounded-md border focus:outline-none focus:ring-1.2 cursor-pointer ${
+                                  b.status === 'confirmed'
+                                    ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                    : b.status === 'cancelled'
+                                    ? 'bg-slate-105 text-slate-500 border-slate-200'
+                                    : 'bg-amber-50 text-amber-700 border-amber-205'
+                                }`}
+                              >
+                                <option value="pending">⏳ انتظار</option>
+                                <option value="confirmed">👥 مؤكد</option>
+                                <option value="cancelled">🚫 ملغي</option>
+                              </select>
+                            ) : (
+                              <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
+                                b.status === 'confirmed'
+                                  ? 'bg-blue-50 text-blue-700'
+                                  : b.status === 'cancelled'
+                                  ? 'bg-slate-100 text-slate-400'
+                                  : 'bg-amber-50 text-amber-700'
+                              }`}>
+                                {b.status === 'confirmed' ? 'دور مؤكد' : b.status === 'cancelled' ? 'ملغي' : 'بانتظار التأكيد'}
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Ticket action / print */}
+                          <td className="px-4 py-3 whitespace-nowrap text-center">
+                            <div className="flex items-center justify-center gap-2">
+                              <button
+                                onClick={() => setActiveTicket(b)}
+                                className="p-1 px-2 hover:bg-slate-50 text-slate-600 rounded border border-slate-200 transition-colors text-[10px] font-bold flex items-center gap-0.5 cursor-pointer"
+                              >
+                                <Printer className="h-3 w-3" />
+                                كرت الحجز
+                              </button>
+
+                              {isAdmin && (
+                                <button
+                                  onClick={() => handleDeleteClick(b.id)}
+                                  className="p-1 text-red-650 hover:bg-red-50 rounded border border-red-100 transition-all cursor-pointer"
+                                  title="حذف الحجز نهائياً"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* SEARCH & FILTERS BAR */}
-      <div id="bookings-filter-bar" className="bg-white p-4 border border-slate-100 rounded-2xl shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
-        <div className="flex flex-1 flex-col sm:flex-row gap-3 w-full md:w-auto">
-          {/* Text Input */}
-          <div className="relative flex-1">
-            <Search className="absolute right-3.5 top-3 h-4 w-4 text-slate-400" />
-            <input
-              id="bookings-search-input"
-              type="text"
-              placeholder="البحث باسم المريض أو رقم الهاتف..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-3 pr-10 py-2 bg-slate-50 border border-slate-200 text-xs rounded-xl text-slate-700 font-bold focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all"
-            />
-          </div>
-
-          {/* Booking State Filter */}
-          <select
-            id="status-filter-select"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 text-xs text-slate-600 rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all font-bold"
-          >
-            <option value="all">كل حالات الحجز</option>
-            <option value="pending">انتظار المراجعة (Pending)</option>
-            <option value="confirmed">مؤكد (Confirmed)</option>
-            <option value="cancelled">ملغي (Cancelled)</option>
-          </select>
-
-          {/* Payment State Filter */}
-          <select
-            id="payment-filter-select"
-            value={paymentFilter}
-            onChange={(e) => setPaymentFilter(e.target.value)}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 text-xs text-slate-600 rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all font-bold"
-          >
-            <option value="all">كل حالات الدفع</option>
-            <option value="pending">معلق وغير مسدد</option>
-            <option value="paid">مسدد وخالص الرسوم</option>
-            <option value="cancelled">ملغي مسترجع</option>
-          </select>
-        </div>
-
-        {/* Action button (Admin only) */}
-        {isAdmin ? (
-          <button
-            id="open-manual-booking-modal"
-            type="button"
-            onClick={() => setShowAddModal(true)}
-            className="w-full md:w-auto shrink-0 flex items-center justify-center px-4 py-2 bg-blue-700 text-white font-black text-xs rounded-xl shadow hover:bg-blue-850 hover:shadow-md transition-all"
-          >
-            <PlusSquare className="h-4.5 w-4.5 ml-1.5" />
-            تسجيل حجز يدوي (Walk-in) ➕
-          </button>
-        ) : (
-          <div className="text-[10px] text-slate-400 font-bold bg-slate-50 border border-slate-150 rounded-xl px-3 py-2 text-center w-full md:w-auto">
-            📥 التسجيل اليدوي معطل للموظفين
-          </div>
-        )}
-      </div>
-
-      {/* BOOKINGS TABLE PANEL */}
-      <div id="bookings-table-panel" className="bg-white border border-slate-100 rounded-2xl shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-          <h3 className="text-sm font-black text-slate-800 font-sans">جدول طلبات حجوزات العيادات ({filteredBookings.length})</h3>
-          <span className="text-[10px] bg-slate-50 border border-slate-200 text-slate-500 font-bold px-3 py-1 rounded">
-            يوم العمل الحالي: {new Date(getYemenTime()).toLocaleDateString('ar-YE')}
-          </span>
-        </div>
-
-        <div className="overflow-x-auto">
-          {filteredBookings.length === 0 ? (
-            <div id="no-filtered-bookings" className="p-12 text-center text-slate-400 text-xs">
-              لا توجد أي حجوزات تطابق معايير وتصفية البحث المحددة.
-            </div>
-          ) : (
-            <table id="bookings-table" className="min-w-full divide-y divide-slate-100">
-              <thead className="bg-slate-50/70">
-                <tr>
-                  <th className="px-4 py-3 text-right text-xs font-black text-slate-500">الدور 🎫</th>
-                  <th className="px-4 py-3 text-right text-xs font-black text-slate-500">اسم المريض</th>
-                  <th className="px-4 py-3 text-right text-xs font-black text-slate-500">رقم الهاتف</th>
-                  <th className="px-4 py-3 text-right text-xs font-black text-slate-500">العيادة المطلوبة</th>
-                  <th className="px-4 py-3 text-right text-xs font-black text-slate-500">موعد الحجز والزيارة</th>
-                  <th className="px-4 py-3 text-center text-xs font-black text-slate-500">قيمة تذكرة الدفتر</th>
-                  <th className="px-4 py-3 text-center text-xs font-black text-slate-500">حالة الحجز</th>
-                  <th className="px-1 py-1 text-center text-xs font-black text-slate-500">الإجراءات</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 bg-white">
-                {filteredBookings.map((b) => {
-                  const createdTime = new Date(b.created_at || b.booking_date).getTime();
-                  const hoursDiff = (getYemenTime().getTime() - createdTime) / (1000 * 60 * 60);
-                  const isExpiredPending = b.payment_status === 'pending' && b.status !== 'cancelled' && hoursDiff > 48;
-
-                  return (
-                    <tr key={b.id} id={`booking-row-${b.id}`} className="hover:bg-slate-50/50 transition-colors">
-                      {/* Queue code */}
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className="inline-flex items-center justify-center h-8 w-8 rounded-lg bg-blue-50 text-blue-700 font-black text-xs font-mono border border-blue-100">
-                          {b.queue_number}
-                        </span>
-                      </td>
-
-                      {/* Patient Name */}
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <div className="text-xs font-black text-slate-800">{b.patient_name}</div>
-                        <div className="flex items-center text-[9px] text-slate-400 mt-0.5">
-                          {b.verified_by_whatsapp ? (
-                            <span className="text-emerald-600 font-black">🤖 حجز بالبوت</span>
-                          ) : (
-                            <span className="text-blue-600 font-black">🏢 تسجيل يدوي</span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Patient Phone */}
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className="text-[11px] font-bold text-slate-600 font-mono">
-                          +{b.patient_phone}
-                        </span>
-                      </td>
-
-                      {/* Clinic */}
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <div className="text-xs font-black text-slate-800">{b.doctor_name}</div>
-                        <div className="text-[9px] text-slate-405 leading-none">{b.doctor_specialty}</div>
-                      </td>
-
-                      {/* Visit date */}
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <div className="text-xs font-bold text-slate-700 font-mono">{b.booking_date}</div>
-                        <div className="text-[9px] text-slate-400 mt-0.5">
-                          تاريخ المعالجة: {new Date(b.created_at || '').toLocaleDateString('ar-YE')}
-                        </div>
-                      </td>
-
-                      {/* Payment Status Dropdown / Badge */}
-                      <td className="px-4 py-3 whitespace-nowrap text-center">
-                        {isAdmin ? (
-                          <select
-                            id={`pay-select-${b.id}`}
-                            value={b.payment_status}
-                            onChange={(e) => handleUpdatePayment(b.id, e.target.value as PaymentStatus)}
-                            className={`px-2 py-0.5 text-[10px] font-black rounded-md border focus:outline-none focus:ring-1.5 focus:ring-blue-500 cursor-pointer ${
-                              b.payment_status === 'paid'
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                : b.payment_status === 'cancelled'
-                                ? 'bg-red-50 text-red-700 border-red-200'
-                                : 'bg-amber-50 text-amber-700 border-amber-200'
-                            }`}
-                          >
-                            <option value="pending">⏳ معلق (Pending)</option>
-                            <option value="paid">✅ مسدد (Paid)</option>
-                            <option value="cancelled">❌ ملغي (Cancelled)</option>
-                          </select>
-                        ) : (
-                          <span className={`inline-flex px-2 py-0.5 text-[10px] font-black rounded ${
-                            b.payment_status === 'paid'
-                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
-                              : 'bg-amber-50 text-amber-700 border border-amber-100'
-                          }`}>
-                            {b.payment_status === 'paid' ? 'مسدد وخالص الرسوم' : 'معلق لم يسدد'}
-                          </span>
-                        )}
-                        {isExpiredPending && (
-                          <span className="block text-[8px] font-bold text-red-500 mt-1 flex items-center justify-center animate-bounce">
-                            <CircleAlert className="h-2.5 w-2.5 ml-0.5" />
-                            تجاوز 48 ساعة! (انتهى)
-                          </span>
-                        )}
-                      </td>
-
-                      {/* Booking Status Dropdown / Badge */}
-                      <td className="px-4 py-3 whitespace-nowrap text-center">
-                        {isAdmin ? (
-                          <select
-                            id={`status-select-${b.id}`}
-                            value={b.status}
-                            onChange={(e) => handleUpdateStatus(b.id, e.target.value as BookingStatus)}
-                            className={`px-2 py-0.5 text-[10px] font-black rounded-md border focus:outline-none focus:ring-1.5 focus:ring-blue-500 cursor-pointer ${
-                              b.status === 'confirmed'
-                                ? 'bg-blue-50 text-blue-700 border-blue-200'
-                                : b.status === 'cancelled'
-                                ? 'bg-slate-100 text-slate-500 border-slate-200'
-                                : 'bg-amber-50 text-amber-700 border-amber-200'
-                            }`}
-                          >
-                            <option value="pending">⏳ انتظار (Pending)</option>
-                            <option value="confirmed">👥 مؤكد (Confirmed)</option>
-                            <option value="cancelled">🚫 ملغي (Cancelled)</option>
-                          </select>
-                        ) : (
-                          <span className={`inline-flex px-2 py-0.5 text-[10px] font-black rounded ${
-                            b.status === 'confirmed'
-                              ? 'bg-blue-50 text-blue-700 border border-blue-105'
-                              : b.status === 'cancelled'
-                              ? 'bg-slate-100 text-slate-400 border border-slate-200'
-                              : 'bg-amber-50 text-amber-700 border border-amber-105'
-                          }`}>
-                            {b.status === 'confirmed' ? 'حجز دور مؤكد' : b.status === 'cancelled' ? 'ملغي' : 'مراجعة معلقة'}
-                          </span>
-                        )}
-                      </td>
-
-                      {/* Actions */}
-                      <td className="px-1 py-3 whitespace-nowrap text-center text-xs">
-                        <div className="flex items-center justify-center space-x-1.5 space-x-reverse">
-                          <button
-                            id={`print-booking-btn-${b.id}`}
-                            onClick={() => setActiveTicket(b)}
-                            className="p-1 px-1.5 text-[10px] text-blue-600 bg-white hover:bg-blue-50 rounded-md border border-blue-100 transition-all flex items-center"
-                            title="عرض وطباعة كرت المراجعة"
-                          >
-                            <Printer className="h-3 w-3 ml-1" />
-                            تذكرة دور
-                          </button>
-                          {isAdmin && (
-                            <button
-                              id={`delete-booking-btn-${b.id}`}
-                              onClick={() => handleDeleteBooking(b.id)}
-                              className="p-1 text-red-500 hover:bg-red-50 rounded border border-red-105 transition-all"
-                              title="حذف الحجز نهائياً"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-
-      {/* TICKET DRAWER / REVEAL MODAL */}
-      {activeTicket && (
-        <div id="ticket-modal" className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden shadow-2xl border border-slate-100 animate-slide-up">
-            {/* Header */}
-            <div className="bg-slate-50 border-b border-slate-100 p-4 flex items-center justify-between">
-              <span className="text-xs font-black text-slate-800 flex items-center">
-                <Printer className="h-4 w-4 ml-1.5 text-blue-700" />
-                تذكرة المراجعة الرسمية
-              </span>
+      {/* Manual Booking Modal */}
+      {showAddModal && selectedSchId && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-xl max-w-md w-full overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-slate-105 flex justify-between items-center bg-slate-50">
+              <h3 className="text-sm font-black text-slate-800">حجز موعد يدوي جديد</h3>
               <button
-                id="close-ticket"
-                onClick={() => setActiveTicket(null)}
-                className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full"
+                onClick={() => setShowAddModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            {/* Print Body */}
-            <div id="printable-area" className="p-6 text-center space-y-4">
-              {/* Logo & header */}
-              <div className="flex flex-col items-center space-y-2">
-                <img
-                  src={HOSPITAL_LOGO}
-                  alt="لوجو برج الأطباء"
-                  className="h-16 w-16 object-contain"
-                  referrerPolicy="no-referrer"
+            {error && <div className="p-3 bg-red-50 text-red-700 text-xs font-semibold m-4 rounded-xl border border-red-100">{error}</div>}
+            {success && <div className="p-3 bg-emerald-50 text-emerald-700 text-xs font-semibold m-4 rounded-xl border border-emerald-100">{success}</div>}
+
+            <form onSubmit={handleManualBookingSubmit} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1.5 font-sans">اسم المريض الثلاثي</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="مثال: صالح عبدالله اليدومي"
+                  value={manualName}
+                  onChange={(e) => setManualName(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all font-bold"
                 />
-                <h4 className="text-sm font-black text-slate-800">مستشفى برج الأطباء التخصصي</h4>
-                <p className="text-[10px] text-slate-400">صنعاء - اليمن | هاتف: 01-444444</p>
               </div>
 
-              {/* Dotted separator */}
-              <div className="border-t border-dashed border-slate-200 my-4" />
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1.5">رقم الهاتف (بلواحق مفتاح الدولة)</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="96777123456"
+                  value={manualPhone}
+                  onChange={(e) => setManualPhone(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all font-bold"
+                />
+              </div>
 
-              {/* Big Queue Number */}
-              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 inline-block">
-                <span className="block text-[10px] text-slate-400 font-bold mb-1">رقم الدور الخاص بك</span>
-                <span className="text-3xl font-black text-blue-700 font-mono tracking-wider">
-                  🎫 {activeTicket.queue_number}
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-1.5">تاريخ الزيارة والكشف</label>
+                <input
+                  type="date"
+                  required
+                  value={manualDate}
+                  onChange={(e) => setManualDate(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-205 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-550 transition-all font-bold"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-2.5 bg-blue-700 text-white text-xs font-black rounded-xl hover:bg-blue-800 transition-all disabled:opacity-50 cursor-pointer"
+              >
+                {loading ? 'جاري تثبيت الحجز وتوليد رقم الدور...' : 'تثبيت الحجز وحجز المقعد الطبي 💾'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Ticket / Print modal */}
+      {activeTicket && (
+        <div id="print-ticket-backdrop" className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-2xl max-w-sm w-full overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <span className="text-xs font-black text-slate-800">تذكرة المراجعة المكتملة</span>
+              <button
+                onClick={() => setActiveTicket(null)}
+                className="text-slate-400 hover:text-slate-600 p-1"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Printable Area block */}
+            <div id="printable-ticket" className="p-6 text-center space-y-4 bg-white">
+              <div className="flex justify-center mb-1">
+                <img
+                  src={HOSPITAL_LOGO}
+                  alt="Logo"
+                  className="h-14 w-14 object-contain rounded-full bg-slate-50 p-1 border border-slate-200"
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+              <div>
+                <h4 className="text-sm font-black text-slate-850">مستشفى برج الأطباء التخصصي</h4>
+                <p className="text-[9px] text-slate-405">صنعاء، اليمن - تذكرة مراجعة آلية</p>
+              </div>
+
+              <div className="border-t border-b border-dashed border-slate-200 py-3 space-y-2">
+                <span className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider">رقم دور الدخول المتتالي</span>
+                <span className="text-4xl font-extrabold text-blue-700 font-mono tracking-tight block">
+                  {activeTicket.queue_number}
+                </span>
+                <span className="inline-flex items-center px-2 py-0.5 text-[9px] font-black bg-blue-50 text-blue-700 rounded-md border border-blue-100">
+                  {ARABIC_DAYS[schedules.find(s => s.id === activeTicket.schedule_id)?.day_of_week ?? 0]} (الفترة: {schedules.find(s => s.id === activeTicket.schedule_id)?.start_time})
                 </span>
               </div>
 
-              {/* Medical Information */}
-              <div className="text-right space-y-2 text-xs text-slate-700 font-bold bg-slate-50/50 p-4 rounded-2xl border border-slate-100">
+              <div className="text-right space-y-1.5 text-xs">
                 <div className="flex justify-between">
-                  <span className="text-slate-400 font-medium">المريض:</span>
-                  <span className="text-slate-800">{activeTicket.patient_name}</span>
+                  <span className="text-slate-400">اسم المريض:</span>
+                  <span className="font-extrabold text-slate-800">{activeTicket.patient_name}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-400 font-medium">العيادة / الطبيب:</span>
-                  <span className="text-slate-205">{activeTicket.doctor_name}</span>
+                  <span className="text-slate-400">الهاتف:</span>
+                  <span className="font-bold text-slate-700 font-mono">+{activeTicket.patient_phone}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-400 font-medium">تاريخ الزيارة:</span>
-                  <span className="text-slate-800 font-mono">{activeTicket.booking_date}</span>
+                  <span className="text-slate-400">الطبيب المعالج:</span>
+                  <span className="font-bold text-slate-800">{activeTicket.doctor_name}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-400 font-medium">حالة السداد:</span>
-                  <span className={activeTicket.payment_status === 'paid' ? 'text-emerald-600' : 'text-amber-600'}>
-                    {activeTicket.payment_status === 'paid' ? 'مسدد وخالص الرسوم ✅' : 'قيد الانتظار (معلق) ⏳'}
+                  <span className="text-slate-400">تاريخ المعاينة الكشوف:</span>
+                  <span className="font-bold text-slate-700 font-mono">{activeTicket.booking_date}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">حالة الرسوم:</span>
+                  <span className={`font-black uppercase tracking-tight text-[10px] ${activeTicket.payment_status === 'paid' ? 'text-emerald-600' : 'text-amber-600'}`}>
+                    {activeTicket.payment_status === 'paid' ? 'مدفوعة ومسددة' : 'بانتظار السداد'}
                   </span>
                 </div>
               </div>
 
-              {/* Instructions */}
-              <div className="text-[10px] text-slate-400 text-center leading-relaxed">
-                * الرجاء التواجد في العيادة قبل الموعد بنصف ساعة لطرح تذكرة الكشف.
-                <br />
-                * صلاحية الحجز معلقة لـ 48 ساعة فقط حتى إبراز السند للصندوق.
-              </div>
-
-              {/* Scan effect */}
-              <div className="text-[9px] text-slate-300 font-mono">
-                Code ID: {activeTicket.id}
+              <div className="pt-2 text-[8px] text-slate-400 border-t border-slate-100">
+                يرجى الحضور قبل الموعد بـ 15 دقيقة وإبراز هذا الكرت لموظف الاستقبال لتوثيق التسجيل الطبي.
               </div>
             </div>
 
-            {/* Print trigger footer */}
-            <div className="p-4 bg-slate-55 border-t border-slate-100 flex gap-2">
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex gap-2">
               <button
-                id="print-ticket-trigger"
-                onClick={triggerPrint}
-                className="flex-1 flex justify-center items-center py-2.5 bg-blue-700 text-white text-xs font-black rounded-xl hover:bg-blue-800"
+                onClick={() => window.print()}
+                className="flex-grow py-2 bg-blue-700 text-white text-xs font-black rounded-lg hover:bg-blue-800 transition-colors shadow flex items-center justify-center gap-1 cursor-pointer"
               >
-                <Printer className="h-4 w-4 ml-1.5" />
-                طباعة التذكرة 🖨️
+                <Printer className="h-3.5 w-3.5" />
+                طباعة التذكرة
+              </button>
+              <button
+                onClick={() => setActiveTicket(null)}
+                className="px-3 py-2 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                إغلاق
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* WALK-IN MANUAL BOOKING REGISTRATION MODAL */}
-      {showAddModal && (
-        <div id="add-booking-modal" className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl border border-slate-100 animate-slide-up">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-              <span className="text-sm font-black text-slate-800 flex items-center">
-                <CalendarClock className="h-5 w-5 ml-1.5 text-blue-700" />
-                تسجيل حجز يدوي مباشر (Walk-in Entry)
-              </span>
-              <button
-                id="close-add-modal"
-                onClick={() => { setShowAddModal(false); setError(''); }}
-                className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <form id="manual-booking-form" onSubmit={handleManualBookingSubmit} className="p-6 space-y-4">
-              {error && <p id="manual-booking-error" className="p-2.5 text-xs bg-red-50 text-red-600 rounded-xl">{error}</p>}
-              {success && <p id="manual-booking-success" className="p-2.5 text-xs bg-emerald-50 text-emerald-700 rounded-xl">{success}</p>}
-
-              {/* Patient Name */}
-              <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">اسم المريض الثلاثي</label>
-                <input
-                  id="manual-patient-name"
-                  type="text"
-                  required
-                  placeholder="مثال: صالح عبدالله اليدومي"
-                  value={patientName}
-                  onChange={(e) => setPatientName(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 text-slate-800 rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all font-bold"
-                />
-              </div>
-
-              {/* Patient Phone */}
-              <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">رقم الهاتف (بلواحق مفتاح الدولة)</label>
-                <input
-                  id="manual-patient-phone"
-                  type="text"
-                  required
-                  placeholder="96777123456"
-                  value={patientPhone}
-                  onChange={(e) => setPatientPhone(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-205 text-slate-800 rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all font-bold"
-                />
-              </div>
-
-              {/* Doctor */}
-              <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">العيادة / الطبيب المختص</label>
-                <select
-                  id="manual-doctor-select"
-                  required
-                  value={selectedDocId}
-                  onChange={(e) => { setSelectedDocId(e.target.value); setSelectedSchId(''); }}
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 text-slate-800 rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all font-bold font-sans"
-                >
-                  <option value="">-- حدد الطبيب من القائمة --</option>
-                  {doctors.filter(d => d.is_active).map(d => (
-                    <option key={d.id} value={d.id}>{d.name} ({d.specialty})</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Schedule Select */}
-              {selectedDocId && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1.5">شواغر جدول الدوام المتاح</label>
-                  <select
-                    id="manual-schedule-select"
-                    required
-                    value={selectedSchId}
-                    onChange={(e) => setSelectedSchId(e.target.value)}
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 text-slate-800 rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all font-bold"
-                  >
-                    <option value="">-- اختر موعد اليوم من العيادة --</option>
-                    {filteredSchedules.map(sch => (
-                      <option key={sch.id} value={sch.id}>
-                        {ARABIC_DAYS[sch.day_of_week]} ({sch.start_time} - {sch.end_time}) [السعة المتبقية: {sch.available_capacity}/{sch.max_capacity}]
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {/* Target visit date */}
-              <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">تاريخ الزيارة والكشف المحدد</label>
-                <input
-                  id="manual-booking-date"
-                  type="date"
-                  required
-                  value={bookingDate}
-                  onChange={(e) => setBookingDate(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-205 text-slate-800 rounded-xl focus:bg-white focus:outline-none focus:ring-1.5 focus:ring-blue-500 transition-all font-bold"
-                />
-              </div>
-
-              {/* Submit panel */}
-              <button
-                id="submit-manual-booking"
-                type="submit"
-                disabled={loading}
-                className="w-full py-3 bg-blue-700 text-white text-xs font-black rounded-xl hover:bg-blue-800 transition-all disabled:opacity-50"
-              >
-                {loading ? 'جاري تسجيل الحجز وتوليد رقم الدور...' : 'تثبيت الحجز الطبي وحجز المقعد 💾'}
-              </button>
-            </form>
           </div>
         </div>
       )}

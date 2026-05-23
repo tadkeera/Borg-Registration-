@@ -12,6 +12,7 @@ import SchedulesTab from './components/SchedulesTab';
 import BookingsTab from './components/BookingsTab';
 import SettingsTab from './components/SettingsTab';
 import SimulatorTab from './components/SimulatorTab';
+import AccessSettingsTab from './components/AccessSettingsTab';
 import { ShieldCheck, UserCheck, Stethoscope, BookOpen, Clock, PhoneCall, HelpCircle, LogOut } from 'lucide-react';
 
 export default function App() {
@@ -26,7 +27,7 @@ export default function App() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   
   // Tab control
-  const [activeTab, setActiveTab] = useState<'doctors' | 'schedules' | 'bookings' | 'simulator' | 'settings'>('bookings');
+  const [activeTab, setActiveTab] = useState<'doctors' | 'schedules' | 'bookings' | 'simulator' | 'settings' | 'access_settings'>('bookings');
 
   // Loading/Refresh triggering helpers
   const [loading, setLoading] = useState(true);
@@ -233,13 +234,13 @@ export default function App() {
         {/* User Badge / Actions */}
         <div className="flex items-center gap-3">
           <div className="text-left sm:text-right font-sans">
-            <span className="block text-xs font-black text-slate-700">
-              {role === 'admin' ? 'مدير النظام 💻' : `م. الاستقبال: ${receptionistName} 👥`}
+            <span className="block text-xs font-black text-slate-705">
+              المستخدم: {receptionistName || 'مدير مجهول'} 👥
             </span>
             <span id="user-role-tag" className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold ${
               role === 'admin' ? 'bg-blue-50 text-blue-700 border border-blue-100' : 'bg-amber-50 text-amber-700 border border-amber-100'
             }`}>
-              {role === 'admin' ? 'كامل الصلاحيات (Admin)' : 'للعرض والمطالعة فقط (Read-Only)'}
+              {role === 'admin' ? 'مدير النظام (Admin)' : 'موظف استقبال (Receptionist)'}
             </span>
           </div>
 
@@ -318,53 +319,69 @@ export default function App() {
           📝 سجل المراجعات والحجوزات
         </button>
 
-        <button
-          id="tab-doctors"
-          onClick={() => setActiveTab('doctors')}
-          className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
-            activeTab === 'doctors'
-              ? 'bg-blue-700 text-white shadow'
-              : 'text-slate-500 hover:text-slate-705'
-          }`}
-        >
-          🩺 لوحة العيادات الكبرى
-        </button>
+        {role === 'admin' && (
+          <>
+            <button
+              id="tab-doctors"
+              onClick={() => setActiveTab('doctors')}
+              className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
+                activeTab === 'doctors'
+                  ? 'bg-blue-700 text-white shadow'
+                  : 'text-slate-500 hover:text-slate-705'
+              }`}
+            >
+              🩺 لوحة العيادات الكبرى
+            </button>
 
-        <button
-          id="tab-schedules"
-          onClick={() => setActiveTab('schedules')}
-          className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
-            activeTab === 'schedules'
-              ? 'bg-blue-700 text-white shadow'
-              : 'text-slate-500 hover:text-slate-705'
-          }`}
-        >
-          🗓️ جداول دوام الأطباء
-        </button>
+            <button
+              id="tab-schedules"
+              onClick={() => setActiveTab('schedules')}
+              className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
+                activeTab === 'schedules'
+                  ? 'bg-blue-700 text-white shadow'
+                  : 'text-slate-500 hover:text-slate-705'
+              }`}
+            >
+              🗓️ جداول دوام الأطباء
+            </button>
 
-        <button
-          id="tab-simulator"
-          onClick={() => setActiveTab('simulator')}
-          className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
-            activeTab === 'simulator'
-              ? 'bg-blue-700 text-white shadow'
-              : 'text-slate-500 hover:text-slate-705'
-          }`}
-        >
-          🤖 محاكي محادثات الواتساب
-        </button>
+            <button
+              id="tab-simulator"
+              onClick={() => setActiveTab('simulator')}
+              className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
+                activeTab === 'simulator'
+                  ? 'bg-blue-700 text-white shadow'
+                  : 'text-slate-500 hover:text-slate-705'
+              }`}
+            >
+              🤖 محاكي محادثات الواتساب
+            </button>
 
-        <button
-          id="tab-settings"
-          onClick={() => setActiveTab('settings')}
-          className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
-            activeTab === 'settings'
-              ? 'bg-blue-700 text-white shadow'
-              : 'text-slate-500 hover:text-slate-705'
-          }`}
-        >
-          ⚙️ إعدادات الخادم والربط
-        </button>
+            <button
+              id="tab-settings"
+              onClick={() => setActiveTab('settings')}
+              className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
+                activeTab === 'settings'
+                  ? 'bg-blue-700 text-white shadow'
+                  : 'text-slate-500 hover:text-slate-705'
+              }`}
+            >
+              ⚙️ إعدادات الخادم والربط
+            </button>
+
+            <button
+              id="tab-access-settings"
+              onClick={() => setActiveTab('access_settings')}
+              className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
+                activeTab === 'access_settings'
+                  ? 'bg-blue-700 text-white shadow'
+                  : 'text-slate-500 hover:text-slate-705'
+              }`}
+            >
+              🔐 إعدادات الحسابات والدخول
+            </button>
+          </>
+        )}
       </nav>
 
       {/* 4. MAIN CONTENT AREA */}
@@ -389,7 +406,7 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'doctors' && (
+            {activeTab === 'doctors' && role === 'admin' && (
               <DoctorsTab
                 doctors={doctors}
                 role={role}
@@ -399,7 +416,7 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'schedules' && (
+            {activeTab === 'schedules' && role === 'admin' && (
               <SchedulesTab
                 schedules={schedules}
                 doctors={doctors}
@@ -410,12 +427,16 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'simulator' && (
+            {activeTab === 'simulator' && role === 'admin' && (
               <SimulatorTab onSendMessageCallback={fetchAllData} />
             )}
 
-            {activeTab === 'settings' && (
+            {activeTab === 'settings' && role === 'admin' && (
               <SettingsTab role={role} onReloadAllData={fetchAllData} />
+            )}
+
+            {activeTab === 'access_settings' && role === 'admin' && (
+              <AccessSettingsTab currentUserRole={role} />
             )}
           </>
         )}
