@@ -1,0 +1,1176 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import express from 'express';
+import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
+import { createServer as createViteServer } from 'vite';
+import { DbState, Doctor, Schedule, Booking, WhatsAppLog, BotSession, BotState, BookingStatus, PaymentStatus } from './src/types';
+
+const app = express();
+const PORT = 3000;
+const DB_FILE = path.join(process.cwd(), 'data', 'db.json');
+
+// Ensure data directory exists
+if (!fs.existsSync(path.join(process.cwd(), 'data'))) {
+  fs.mkdirSync(path.join(process.cwd(), 'data'), { recursive: true });
+}
+
+// -------------------------------------------------------------------------
+// TIMEZONE & DATE UTILITIES (YEMEN UTC+3)
+// -------------------------------------------------------------------------
+function getYemenTime(): Date {
+  const now = new Date();
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+  return new Date(utc + (3600000 * 3)); // Yemen is UTC + 3
+}
+
+function getDayNameArabic(dayIndex: number): string {
+  const days = ['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
+  return days[dayIndex] || 'غير معروف';
+}
+
+function getTargetDate(targetDayOfWeekIndex: number): string {
+  const yemenNow = getYemenTime();
+  const currentJsDay = yemenNow.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+  
+  // Map JS Day index to our day index (0: Sat, 1: Sun, ..., 5: Thu)
+  // Friday is 5 in JS (Wait: Sun=0, Mon=1, Tue=2, Wed=3, Thu=4, Fri=5, Sat=6)
+  // Let's align this mapping:
+  const jsToOur = [1, 2, 3, 4, 5, -1, 0]; // Sun=1, Mon=2, Tue=3, Wed=4, Thu=5, Fri=-1, Sat=0
+  const ourCurrentDay = jsToOur[currentJsDay];
+  
+  if (ourCurrentDay === -1) {
+    // Today is Friday (rigid day off). Next booking slots can start from Saturday.
+    // Days to add = 1 (to Sat) + targetDayOfWeekIndex
+    const daysToAdd = 1 + targetDayOfWeekIndex;
+    const targetDate = new Date(yemenNow.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+    return targetDate.toISOString().split('T')[0];
+  }
+
+  let diff = targetDayOfWeekIndex - ourCurrentDay;
+  if (diff < 0) {
+    // Has passed this week, refers to next week's schedule cycle
+    diff += 7;
+  }
+  
+  const targetDate = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
+  return targetDate.toISOString().split('T')[0];
+}
+
+// -------------------------------------------------------------------------
+// DATABASE STORAGE ENGINE & SEEDING
+// -------------------------------------------------------------------------
+const defaultDb: DbState = {
+  doctors: [
+    { id: 'doc-1', name: 'د. أحمد اليماني', specialty: 'باطنية وقلب وأوعية دموية', is_active: true, allow_second_week_booking: false, limit_two_patients_per_number: false },
+    { id: 'doc-2', name: 'د. سارة عبد الرحمن', specialty: 'أطفال وحديثي ولادة', is_active: true, allow_second_week_booking: false, limit_two_patients_per_number: false },
+    { id: 'doc-3', name: 'د. خالد السقاف', specialty: 'عظام ومفاصل وتشوهات خلقية', is_active: true, allow_second_week_booking: false, limit_two_patients_per_number: false },
+    { id: 'doc-4', name: 'د. ليلى الحميري', specialty: 'نساء وولادة وعقم', is_active: true, allow_second_week_booking: false, limit_two_patients_per_number: false }
+  ],
+  schedules: [
+    // doc-1
+    { id: 'sch-1', doctor_id: 'doc-1', day_of_week: 0, max_capacity: 10, available_capacity: 8, start_time: '09:00', end_time: '12:00' }, // Sat
+    { id: 'sch-2', doctor_id: 'doc-1', day_of_week: 2, max_capacity: 10, available_capacity: 10, start_time: '09:00', end_time: '12:00' }, // Mon
+    // doc-2
+    { id: 'sch-3', doctor_id: 'doc-2', day_of_week: 1, max_capacity: 8, available_capacity: 8, start_time: '15:00', end_time: '18:00' }, // Sun
+    { id: 'sch-4', doctor_id: 'doc-2', day_of_week: 3, max_capacity: 8, available_capacity: 8, start_time: '15:00', end_time: '18:00' }, // Tue
+    // doc-3
+    { id: 'sch-5', doctor_id: 'doc-3', day_of_week: 0, max_capacity: 15, available_capacity: 14, start_time: '08:00', end_time: '13:00' }, // Sat
+    { id: 'sch-6', doctor_id: 'doc-3', day_of_week: 5, max_capacity: 15, available_capacity: 15, start_time: '08:00', end_time: '13:00' }  // Thu
+  ],
+  bookings: [],
+  whatsapp_settings: {
+    id: 1,
+    webhook_verify_token: 'doctors_tower_verify_token_123',
+    access_token: '',
+    app_secret: '',
+    phone_number_id: '',
+    is_active: true
+  },
+  system_settings: {
+    id: 1,
+    receptionist_name_required: true,
+    admin_password: '123' // default (changeable)
+  },
+  bot_sessions: {},
+  whatsapp_logs: []
+};
+
+// Seed Bookings (one expired unpaid to demo cron, some completed)
+const nowStr = getYemenTime().toISOString().split('T')[0];
+const threeDaysAgo = new Date(getYemenTime().getTime() - 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+defaultDb.bookings = [
+  {
+    id: 'book-old-unpaid',
+    doctor_id: 'doc-1',
+    schedule_id: 'sch-1',
+    patient_name: 'صالح محمد علي',
+    patient_phone: '96777123456',
+    booking_date: threeDaysAgo,
+    queue_number: 1,
+    status: 'pending',
+    payment_status: 'pending', // Expired unpaid!
+    verified_by_whatsapp: true,
+    created_at: new Date(getYemenTime().getTime() - 3 * 24 * 60 * 60 * 1000).toISOString()
+  },
+  {
+    id: 'book-confirmed',
+    doctor_id: 'doc-1',
+    schedule_id: 'sch-1',
+    patient_name: 'عمار ياسر الأصبحي',
+    patient_phone: '96777555555',
+    booking_date: nowStr,
+    queue_number: 2,
+    status: 'confirmed',
+    payment_status: 'paid',
+    verified_by_whatsapp: true,
+    created_at: new Date(getYemenTime().getTime() - 1 * 24 * 60 * 60 * 1000).toISOString()
+  },
+  {
+    id: 'book-new-pending',
+    doctor_id: 'doc-3',
+    schedule_id: 'sch-5',
+    patient_name: 'فاطمة عبدالله حسن',
+    patient_phone: '96773333333',
+    booking_date: nowStr,
+    queue_number: 1,
+    status: 'pending',
+    payment_status: 'pending',
+    verified_by_whatsapp: false,
+    created_at: getYemenTime().toISOString()
+  }
+];
+
+// Initialize and Seed JSON Database file if not exist
+if (!fs.existsSync(DB_FILE)) {
+  fs.writeFileSync(DB_FILE, JSON.stringify(defaultDb, null, 2), 'utf-8');
+}
+
+function readDb(): DbState {
+  try {
+    const data = fs.readFileSync(DB_FILE, 'utf-8');
+    return JSON.parse(data);
+  } catch (err) {
+    console.error('Error reading database file, returning default schema:', err);
+    return defaultDb;
+  }
+}
+
+function writeDb(db: DbState) {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to write database file:', err);
+  }
+}
+
+// -------------------------------------------------------------------------
+// SERVER MIDDLEWARE SETUP
+// -------------------------------------------------------------------------
+app.use(express.json());
+
+// CORS headers configuration
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Hub-Signature');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// Basic webhook rate limiting structure (simplified)
+const rateLimits: Record<string, { count: number; firstRequest: number }> = {};
+function webhookRateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  if (!rateLimits[ip]) {
+    rateLimits[ip] = { count: 1, firstRequest: now };
+    return next();
+  }
+  
+  const windowTime = 60 * 1000; // 1 minute
+  if (now - rateLimits[ip].firstRequest > windowTime) {
+    rateLimits[ip] = { count: 1, firstRequest: now };
+    return next();
+  }
+  
+  rateLimits[ip].count++;
+  if (rateLimits[ip].count > 100) { // Max 100 messages per ip per minute
+    return res.status(429).json({ error: 'عذراً، تم تجاوز حد الطلبات المسموح به. يرجى المحاولة لاحقاً.' });
+  }
+  next();
+}
+
+// -------------------------------------------------------------------------
+// REST API ENDPOINTS
+// -------------------------------------------------------------------------
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', serverTime: getYemenTime().toISOString(), timezone: 'Asia/Aden (UTC+3)' });
+});
+
+// 1. AUTHENTICATION & SECURITY
+app.post('/api/auth/login', (req, res) => {
+  const { username, password, receptionistName } = req.body;
+  const db = readDb();
+  
+  // Quick credentials logic
+  if (username === '123' && password === db.system_settings.admin_password) {
+    // Admin login
+    return res.json({
+      success: true,
+      role: 'admin',
+      token: 'admin-super-secret-token',
+      receptionistName: null
+    });
+  } 
+  
+  if (username === 'receptionist' && password === 'receptionist') {
+    if (db.system_settings.receptionist_name_required && !receptionistName) {
+      return res.status(400).json({ success: false, error: 'يجب إدخال اسم موظف الاستقبل لتسجيل الدخول.' });
+    }
+    return res.json({
+      success: true,
+      role: 'receptionist',
+      token: 'receptionist-secret-token',
+      receptionistName: receptionistName || 'موظف الاستقبال'
+    });
+  }
+  
+  res.status(401).json({ success: false, error: 'بيانات الدخول غير صحيحة.' });
+});
+
+// 2. DOCTORS ENDPOINTS (CRUD)
+app.get('/api/doctors', (req, res) => {
+  const db = readDb();
+  res.json(db.doctors);
+});
+
+app.post('/api/doctors', (req, res) => {
+  const { name, specialty, is_active, allow_second_week_booking, limit_two_patients_per_number } = req.body;
+  const db = readDb();
+  const newDoc: Doctor = {
+    id: `doc-${Date.now()}`,
+    name,
+    specialty,
+    is_active: is_active !== undefined ? is_active : true,
+    allow_second_week_booking: allow_second_week_booking !== undefined ? !!allow_second_week_booking : false,
+    limit_two_patients_per_number: limit_two_patients_per_number !== undefined ? !!limit_two_patients_per_number : false
+  };
+  db.doctors.push(newDoc);
+  writeDb(db);
+  res.status(201).json(newDoc);
+});
+
+app.put('/api/doctors/:id', (req, res) => {
+  const { id } = req.params;
+  const { name, specialty, is_active, allow_second_week_booking, limit_two_patients_per_number } = req.body;
+  const db = readDb();
+  const idx = db.doctors.findIndex(d => d.id === id);
+  if (idx === -1) return res.status(404).json({ error: 'Doctor not found' });
+  
+  db.doctors[idx] = {
+    ...db.doctors[idx],
+    name: name !== undefined ? name : db.doctors[idx].name,
+    specialty: specialty !== undefined ? specialty : db.doctors[idx].specialty,
+    is_active: is_active !== undefined ? is_active : db.doctors[idx].is_active,
+    allow_second_week_booking: allow_second_week_booking !== undefined ? !!allow_second_week_booking : !!db.doctors[idx].allow_second_week_booking,
+    limit_two_patients_per_number: limit_two_patients_per_number !== undefined ? !!limit_two_patients_per_number : !!db.doctors[idx].limit_two_patients_per_number
+  };
+  writeDb(db);
+  res.json(db.doctors[idx]);
+});
+
+app.delete('/api/doctors/:id', (req, res) => {
+  const { id } = req.params;
+  const db = readDb();
+  db.doctors = db.doctors.filter(d => d.id !== id);
+  db.schedules = db.schedules.filter(s => s.doctor_id !== id);
+  db.bookings = db.bookings.filter(b => b.doctor_id !== id);
+  writeDb(db);
+  res.json({ success: true, message: 'Doctor deleted' });
+});
+
+// 3. SCHEDULES ENDPOINTS (CRUD)
+app.get('/api/schedules', (req, res) => {
+  const db = readDb();
+  const schedulesWithJoins = db.schedules.map(sch => {
+    const doc = db.doctors.find(d => d.id === sch.doctor_id);
+    return {
+      ...sch,
+      doctor_name: doc ? doc.name : 'طبيب محذوف',
+      doctor_specialty: doc ? doc.specialty : ''
+    };
+  });
+  res.json(schedulesWithJoins);
+});
+
+app.post('/api/schedules', (req, res) => {
+  const { doctor_id, day_of_week, max_capacity, start_time, end_time } = req.body;
+  const db = readDb();
+  
+  // Valid working days constraint Sat-Thu (0-5)
+  if (day_of_week < 0 || day_of_week > 5) {
+    return res.status(400).json({ error: 'عذراً، الجمعة يوم إجازة رسمي ولا بمكن الإضافة ضمنه.' });
+  }
+
+  // Check unique constraints: (doctor_id, day_of_week)
+  const isDuplicate = db.schedules.some(s => s.doctor_id === doctor_id && s.day_of_week === day_of_week);
+  if (isDuplicate) {
+    return res.status(400).json({ error: 'عذراً، هذا اليوم مجدول مسبقاً لهذا الطبيب.' });
+  }
+
+  const capacity = parseInt(max_capacity) || 15;
+  const newSch: Schedule = {
+    id: `sch-${Date.now()}`,
+    doctor_id,
+    day_of_week: parseInt(day_of_week),
+    max_capacity: capacity,
+    available_capacity: capacity,
+    start_time: start_time || '09:00',
+    end_time: end_time || '13:00'
+  };
+  db.schedules.push(newSch);
+  writeDb(db);
+  
+  const doc = db.doctors.find(d => d.id === doctor_id);
+  res.status(201).json({
+    ...newSch,
+    doctor_name: doc ? doc.name : '',
+    doctor_specialty: doc ? doc.specialty : ''
+  });
+});
+
+app.put('/api/schedules/:id', (req, res) => {
+  const { id } = req.params;
+  const { max_capacity, start_time, end_time } = req.body;
+  const db = readDb();
+  const idx = db.schedules.findIndex(s => s.id === id);
+  if (idx === -1) return res.status(404).json({ error: 'Schedule not found' });
+  
+  const oldMax = db.schedules[idx].max_capacity;
+  const newMax = max_capacity !== undefined ? parseInt(max_capacity) : oldMax;
+  const capDiff = newMax - oldMax;
+  
+  // Adjust available capacity based on the difference
+  const nextAvailable = Math.max(0, db.schedules[idx].available_capacity + capDiff);
+
+  db.schedules[idx] = {
+    ...db.schedules[idx],
+    max_capacity: newMax,
+    available_capacity: nextAvailable,
+    start_time: start_time || db.schedules[idx].start_time,
+    end_time: end_time || db.schedules[idx].end_time
+  };
+  writeDb(db);
+  res.json(db.schedules[idx]);
+});
+
+app.delete('/api/schedules/:id', (req, res) => {
+  const { id } = req.params;
+  const db = readDb();
+  db.schedules = db.schedules.filter(s => s.id !== id);
+  db.bookings = db.bookings.filter(b => b.schedule_id !== id);
+  writeDb(db);
+  res.json({ success: true, message: 'Schedule deleted' });
+});
+
+// 4. BOOKINGS ENDPOINTS (CRUD)
+app.get('/api/bookings', (req, res) => {
+  const db = readDb();
+  const bookingsWithJoins = db.bookings.map(b => {
+    const doc = db.doctors.find(d => d.id === b.doctor_id);
+    return {
+      ...b,
+      doctor_name: doc ? doc.name : 'طبيب محذوف',
+      doctor_specialty: doc ? doc.specialty : ''
+    };
+  });
+  res.json(bookingsWithJoins);
+});
+
+// Add a direct Dashboard manually booked patient
+app.post('/api/bookings', (req, res) => {
+  const { doctor_id, schedule_id, patient_name, patient_phone, booking_date } = req.body;
+  const db = readDb();
+  
+  // Find schedule
+  const schIdx = db.schedules.findIndex(s => s.id === schedule_id);
+  if (schIdx === -1) return res.status(404).json({ error: 'Schedule not found' });
+  
+  const sch = db.schedules[schIdx];
+  if (sch.available_capacity <= 0) {
+    return res.status(400).json({ error: 'عذراً لا توجد سعة باقية للحجز في هذا الموعد.' });
+  }
+
+  // Calculate sequential queue number for doctor and date
+  const dateBookings = db.bookings.filter(b => b.doctor_id === doctor_id && b.booking_date === booking_date);
+  const nextQueue = dateBookings.length > 0 ? Math.max(...dateBookings.map(b => b.queue_number)) + 1 : 1;
+
+  // Check double/duplicate booking helper constraint
+  const doubleBooked = db.bookings.some(b => b.patient_phone === patient_phone && b.booking_date === booking_date && b.status !== 'cancelled');
+  if (doubleBooked) {
+    return res.status(400).json({ error: 'عذراً، هذا المريض مسجل بالفعل في حجز نشط آخر لهذا اليوم.' });
+  }
+
+  const newBooking: Booking = {
+    id: `book-${Date.now()}`,
+    doctor_id,
+    schedule_id,
+    patient_name,
+    patient_phone,
+    booking_date,
+    queue_number: nextQueue,
+    status: 'confirmed', // Manually added are approved
+    payment_status: 'pending', // Starts pending payment
+    verified_by_whatsapp: false,
+    created_at: getYemenTime().toISOString()
+  };
+
+  db.bookings.push(newBooking);
+  db.schedules[schIdx].available_capacity -= 1;
+  writeDb(db);
+
+  const doc = db.doctors.find(d => d.id === doctor_id);
+  res.status(201).json({
+    ...newBooking,
+    doctor_name: doc ? doc.name : '',
+    doctor_specialty: doc ? doc.specialty : ''
+  });
+});
+
+app.put('/api/bookings/:id', (req, res) => {
+  const { id } = req.params;
+  const { status, payment_status, patient_name } = req.body;
+  const db = readDb();
+  const idx = db.bookings.findIndex(b => b.id === id);
+  if (idx === -1) return res.status(404).json({ error: 'Booking not found' });
+  
+  const oldBooking = db.bookings[idx];
+  
+  // Manage capacity adjustment logic
+  let capacityAdjust = 0;
+  
+  const wasCancelled = oldBooking.status === 'cancelled' || oldBooking.payment_status === 'cancelled';
+  const isCancelledNow = status === 'cancelled' || payment_status === 'cancelled';
+
+  if (!wasCancelled && isCancelledNow) {
+    // Increment capacity (freed resource)
+    capacityAdjust = 1;
+  } else if (wasCancelled && !isCancelledNow) {
+    // Decrement capacity
+    capacityAdjust = -1;
+  }
+
+  db.bookings[idx] = {
+    ...db.bookings[idx],
+    patient_name: patient_name !== undefined ? patient_name : oldBooking.patient_name,
+    status: status !== undefined ? status : oldBooking.status,
+    payment_status: payment_status !== undefined ? payment_status : oldBooking.payment_status
+  };
+
+  if (capacityAdjust !== 0) {
+    const schIdx = db.schedules.findIndex(s => s.id === oldBooking.schedule_id);
+    if (schIdx !== -1) {
+      db.schedules[schIdx].available_capacity = Math.max(
+        0,
+        Math.min(
+          db.schedules[schIdx].max_capacity,
+          db.schedules[schIdx].available_capacity + capacityAdjust
+        )
+      );
+    }
+  }
+
+  writeDb(db);
+  
+  const doc = db.doctors.find(d => d.id === db.bookings[idx].doctor_id);
+  res.json({
+    ...db.bookings[idx],
+    doctor_name: doc ? doc.name : '',
+    doctor_specialty: doc ? doc.specialty : ''
+  });
+});
+
+app.delete('/api/bookings/:id', (req, res) => {
+  const { id } = req.params;
+  const db = readDb();
+  const booking = db.bookings.find(b => b.id === id);
+  
+  if (booking) {
+    // If deleted booking was active, free capacity
+    const isCancelled = booking.status === 'cancelled' || booking.payment_status === 'cancelled';
+    if (!isCancelled) {
+      const schIdx = db.schedules.findIndex(s => s.id === booking.schedule_id);
+      if (schIdx !== -1) {
+        db.schedules[schIdx].available_capacity = Math.min(
+          db.schedules[schIdx].max_capacity,
+          db.schedules[schIdx].available_capacity + 1
+        );
+      }
+    }
+    db.bookings = db.bookings.filter(b => b.id !== id);
+    writeDb(db);
+  }
+  
+  res.json({ success: true, message: 'Booking deleted' });
+});
+
+// 5. WHATSAPP SETTINGS ENDPOINTS
+app.get('/api/whatsapp-settings', (req, res) => {
+  const db = readDb();
+  res.json(db.whatsapp_settings);
+});
+
+app.post('/api/whatsapp-settings', (req, res) => {
+  const { webhook_verify_token, access_token, app_secret, phone_number_id, is_active } = req.body;
+  const db = readDb();
+  db.whatsapp_settings = {
+    ...db.whatsapp_settings,
+    webhook_verify_token: webhook_verify_token !== undefined ? webhook_verify_token : db.whatsapp_settings.webhook_verify_token,
+    access_token: access_token !== undefined ? access_token : db.whatsapp_settings.access_token,
+    app_secret: app_secret !== undefined ? app_secret : db.whatsapp_settings.app_secret,
+    phone_number_id: phone_number_id !== undefined ? phone_number_id : db.whatsapp_settings.phone_number_id,
+    is_active: is_active !== undefined ? is_active : db.whatsapp_settings.is_active
+  };
+  writeDb(db);
+  res.json(db.whatsapp_settings);
+});
+
+// 6. SYSTEM SETTINGS ENDPOINTS (Change password)
+app.get('/api/system-settings', (req, res) => {
+  const db = readDb();
+  // Safe return: omit Password from JSON response to clients
+  res.json({
+    receptionist_name_required: db.system_settings.receptionist_name_required
+  });
+});
+
+app.post('/api/system-settings', (req, res) => {
+  const { admin_password } = req.body;
+  if (!admin_password) return res.status(400).json({ error: 'كلمة المرور مطلوبة' });
+  
+  const db = readDb();
+  db.system_settings.admin_password = admin_password;
+  writeDb(db);
+  res.json({ success: true, message: 'تم تحديث كلمة المرور بنجاح.' });
+});
+
+// 7. GET CHAT LOGS
+app.get('/api/whatsapp-logs', (req, res) => {
+  const db = readDb();
+  // Sort logs by timestamp desc
+  const sorted = [...db.whatsapp_logs].sort((a,b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  res.json(sorted);
+});
+
+// Clear log utility
+app.delete('/api/whatsapp-logs', (req, res) => {
+  const db = readDb();
+  db.whatsapp_logs = [];
+  writeDb(db);
+  res.json({ success: true });
+});
+
+// -------------------------------------------------------------------------
+// CRON ROUTE HANDLERS
+// -------------------------------------------------------------------------
+
+/**
+ * Daily Unpaid Booking Cleanup Cron Job
+ * Matches requirement: Cleanup bookings where payment_status is 'pending' AND 48 hours have passed since booking creation date.
+ */
+app.post('/api/cron/cleanup-bookings', (req, res) => {
+  const db = readDb();
+  const yemenNow = getYemenTime();
+  const fortyEightHoursMs = 48 * 60 * 60 * 1000;
+  let cancelledCount = 0;
+
+  db.bookings = db.bookings.map(booking => {
+    if (booking.payment_status === 'pending' && booking.status !== 'cancelled') {
+      const createdTime = new Date(booking.created_at || booking.booking_date).getTime();
+      const diffMs = yemenNow.getTime() - createdTime;
+
+      if (diffMs > fortyEightHoursMs) {
+        cancelledCount++;
+        // Update booking to cancelled
+        const updated = {
+          ...booking,
+          status: 'cancelled' as BookingStatus,
+          payment_status: 'cancelled' as PaymentStatus
+        };
+        
+        // Restore schedule capacity
+        const schIdx = db.schedules.findIndex(s => s.id === booking.schedule_id);
+        if (schIdx !== -1) {
+          db.schedules[schIdx].available_capacity = Math.min(
+            db.schedules[schIdx].max_capacity,
+            db.schedules[schIdx].available_capacity + 1
+          );
+        }
+        return updated;
+      }
+    }
+    return booking;
+  });
+
+  if (cancelledCount > 0) {
+    writeDb(db);
+  }
+
+  res.json({
+    success: true,
+    message: `تم تشغيل عملية تنظيف الحجوزات غير المدفوعة تلقائياً. المجموع الملغي: ${cancelledCount} حجز منتهي الصلاحية (مر عليها أكثر من 48 ساعة).`
+  });
+});
+
+/**
+ * Weekly Reset Trigger Cron Job
+ * configured via vercel.json / Thursday 10:00 PM Yemen Time.
+ * Resets capacities back to max, clear bot sessions to start new week fresh.
+ */
+app.post('/api/cron/reset-weekly', (req, res) => {
+  const db = readDb();
+  
+  // Reset all capacities
+  db.schedules = db.schedules.map(sch => ({
+    ...sch,
+    available_capacity: sch.max_capacity
+  }));
+
+  // Clear running bot sessions
+  const activeSessionKeysCount = Object.keys(db.bot_sessions).length;
+  db.bot_sessions = {};
+
+  writeDb(db);
+
+  res.json({
+    success: true,
+    message: `تم تشغيل وإعادة تهيئة الدورة الأسبوعية بنجاح. الاستعادة لـ ${db.schedules.length} جداول أطباء، وتصفير ${activeSessionKeysCount} جلسات حجز جارية.`
+  });
+});
+
+
+// -------------------------------------------------------------------------
+// OFFICIAL META WHATSAPP WEBHOOK ROUTE
+// -------------------------------------------------------------------------
+
+/**
+ * Webhook GET verification route for Meta verification step configuration
+ */
+app.get('/api/webhook/whatsapp', (req, res) => {
+  const db = readDb();
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  const expectedToken = db.whatsapp_settings.webhook_verify_token || process.env.WHATSAPP_VERIFY_TOKEN || 'doctors_tower_verify_token_123';
+
+  if (mode && token) {
+    if (mode === 'subscribe' && token === expectedToken) {
+      console.log('WhatsApp Webhook Verified Successfully!');
+      return res.status(200).send(challenge);
+    } else {
+      return res.status(403).send('Forbidden: Invalid Verify Token');
+    }
+  }
+  return res.status(400).send('Bad Request');
+});
+
+/**
+ * Webhook POST handler for incoming messaging payloads
+ */
+app.post('/api/webhook/whatsapp', webhookRateLimit, (req, res) => {
+  const db = readDb();
+  const signature = req.headers['x-hub-signature-256'] as string;
+  const appSecret = db.whatsapp_settings.app_secret || process.env.META_APP_SECRET;
+
+  // Webhook security verification: If App Secret is configured, verify SHA256 signature
+  if (appSecret && signature) {
+    const backupSecret = appSecret;
+    const bodyStr = JSON.stringify(req.body);
+    const hash = 'sha256=' + crypto.createHmac('sha256', backupSecret).update(bodyStr).digest('hex');
+    
+    if (signature !== hash) {
+      console.error('Invalid signature webhook payload warning.');
+      return res.status(401).send('Signature Verification Failed');
+    }
+  }
+
+  // Parse Meta WhatsApp Cloud API body message
+  const entry = req.body.entry?.[0];
+  const changes = entry?.changes?.[0];
+  const value = changes?.value;
+  const messageObj = value?.messages?.[0];
+
+  if (messageObj) {
+    const fromPhone = messageObj.from; // e.g., '96777123456'
+    
+    // Core Bot state processing logic
+    const botResponse = handleWhatsappFlow(fromPhone, messageObj);
+    
+    // In actual setup, we trigger HTTPS request to Meta Graph API here
+    // axios.post(`https://graph.facebook.com/v17.0/${db.whatsapp_settings.phone_number_id}/messages`...)
+    console.log(`Webhook Bot Action: To [+${fromPhone}] -> Reply: "${botResponse}"`);
+  }
+
+  res.status(200).json({ success: true });
+});
+
+
+// -------------------------------------------------------------------------
+// REUSABLE STATE MACHINE FLOW LOGIC
+// -------------------------------------------------------------------------
+function getNextWeekDate(targetDayOfWeekIndex: number): string {
+  const thisWeek = getTargetDate(targetDayOfWeekIndex);
+  const date = new Date(thisWeek);
+  date.setDate(date.getDate() + 7);
+  return date.toISOString().split('T')[0];
+}
+
+function getCircledNumber(num: number): string {
+  const circled = ['⓪', '❶', '❷', '❸', '❹', '❺', '❻', '❼', '❽', '❾', '❿', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳'];
+  return circled[num] || `[${num}]`;
+}
+
+function checkMultipleShifts(doctorId: string, schedules: Schedule[]): boolean {
+  const docSchedules = schedules.filter(s => s.doctor_id === doctorId);
+  const days = new Set<number>();
+  const dupDays = new Set<number>();
+  for (const s of docSchedules) {
+    if (days.has(s.day_of_week)) {
+      dupDays.add(s.day_of_week);
+    } else {
+      days.add(s.day_of_week);
+    }
+  }
+  return dupDays.size > 0;
+}
+
+function getDatesPromptForDoctor(
+  doctor: Doctor,
+  shift: 'morning' | 'evening' | null,
+  schedules: Schedule[],
+  bookings: Booking[]
+): { prompt: string; options: { schedule: Schedule; date: string }[] } {
+  const docSchedules = schedules.filter(s => s.doctor_id === doctor.id);
+  
+  const filtered = docSchedules.filter(s => {
+    if (!shift) return true;
+    const startHour = parseInt(s.start_time.split(':')[0]);
+    const isMorning = startHour < 13;
+    return shift === 'morning' ? isMorning : !isMorning;
+  }).sort((a,b) => a.day_of_week - b.day_of_week);
+
+  const options: { schedule: Schedule; date: string }[] = [];
+  let count = 1;
+  let prompt = `عيادات الطبيب *${doctor.name}* متوفرة في الأيام التالية. يرجى حجز اليوم بكتابة رقمه المقابل:`;
+  
+  filtered.forEach(s => {
+    const dayName = getDayNameArabic(s.day_of_week);
+    const date1 = getTargetDate(s.day_of_week);
+    
+    // Calculate available capacity for date1
+    const bkCount1 = bookings.filter(b => b.doctor_id === doctor.id && b.booking_date === date1 && b.status !== 'cancelled').length;
+    const cap1 = Math.max(0, s.max_capacity - bkCount1);
+    
+    options.push({ schedule: s, date: date1 });
+    prompt += `\n\n*${count++}* - ${dayName} - الأسبوع الحالي (${date1}) [المقاعد المتبقية: ${cap1}/${s.max_capacity}]`;
+
+    if (doctor.allow_second_week_booking) {
+      const date2 = getNextWeekDate(s.day_of_week);
+      const bkCount2 = bookings.filter(b => b.doctor_id === doctor.id && b.booking_date === date2 && b.status !== 'cancelled').length;
+      const cap2 = Math.max(0, s.max_capacity - bkCount2);
+      
+      options.push({ schedule: s, date: date2 });
+      prompt += `\n*${count++}* - ${dayName} - الأسبوع الثاني (${date2}) [المقاعد المتبقية: ${cap2}/${s.max_capacity}]`;
+    }
+  });
+  
+  return { prompt, options };
+}
+
+function handleWhatsappFlow(phone: string, messageObj: any): string {
+  const db = readDb();
+  const currentYemenNow = getYemenTime();
+  
+  // Log inbound message
+  const isTextMessage = messageObj.type === 'text';
+  let messageText = isTextMessage ? (messageObj.text?.body || '').trim() : '';
+
+  const incomingLog: WhatsAppLog = {
+    id: `log-${Date.now()}-in`,
+    phone,
+    direction: 'in',
+    message: isTextMessage ? messageText : `[رسالة وسائط متعددة أو غير مدعومة: ${messageObj.type}]`,
+    timestamp: currentYemenNow.toISOString()
+  };
+  db.whatsapp_logs.push(incomingLog);
+
+  // Load or construct active bot session state
+  let session: BotSession = db.bot_sessions[phone];
+  const isNewSession = !session;
+
+  if (isNewSession) {
+    session = {
+      id: `sess-${Date.now()}`,
+      phone,
+      current_state: 'IDLE',
+      patient_name: null,
+      selected_doctor_id: null,
+      selected_schedule_id: null,
+      selected_day_offset: null,
+      selected_shift: null,
+      selected_date: null,
+      last_interaction_at: currentYemenNow.toISOString()
+    };
+  }
+
+  const outputReply = (replyMessage: string, nextState: BotState) => {
+    // Record log out
+    const outgoingLog: WhatsAppLog = {
+      id: `log-${Date.now()}-out`,
+      phone,
+      direction: 'out',
+      message: replyMessage,
+      timestamp: getYemenTime().toISOString()
+    };
+    db.whatsapp_logs.push(outgoingLog);
+
+    // Update Session
+    session.current_state = nextState;
+    session.last_interaction_at = getYemenTime().toISOString();
+    db.bot_sessions[phone] = session;
+
+    writeDb(db);
+    return replyMessage;
+  };
+
+  // CHECK 1: 10-Minute Timeout validation
+  if (!isNewSession && session.current_state !== 'IDLE' && session.current_state !== 'COMPLETED') {
+    const lastTime = new Date(session.last_interaction_at).getTime();
+    const diffMin = (currentYemenNow.getTime() - lastTime) / (1000 * 60);
+
+    if (diffMin > 10) {
+      // CLEAR State and trigger timeout feedback
+      session = {
+        ...session,
+        current_state: 'IDLE',
+        patient_name: null,
+        selected_doctor_id: null,
+        selected_schedule_id: null,
+        selected_day_offset: null,
+        selected_shift: null,
+        selected_date: null,
+        last_interaction_at: currentYemenNow.toISOString()
+      };
+      
+      return outputReply(
+        "عذراً، انتهت مدة الجلسة (أكبر من 10 دقائق). الرجاء إرسال كلمة 'تسجيل' للبدء من جديد.",
+        'IDLE'
+      );
+    }
+  }
+
+  // CHECK 2: Meta Message validation constraints of TEXT inputs only
+  if (!isTextMessage) {
+    return outputReply(
+      "عذراً، لم أتمكن من فهم طلبك. الرجاء الالتزام بالخيارات المتاحة وإرسال إجابة نصية صحيحة.",
+      session.current_state
+    );
+  }
+
+  // STATE MACHINE RUN
+  const state = session.current_state;
+
+  if (state === 'IDLE' || state === 'COMPLETED') {
+    if (messageText === 'تسجيل' || messageText === '1' || messageText.toLowerCase().includes('مرحبا') || messageText.toLowerCase().includes('سلام')) {
+      const activeDocs = db.doctors.filter(d => d.is_active);
+      if (activeDocs.length === 0) {
+        return outputReply(
+          "عذراً، لا يوجد أطباء متاحين للجدولة حالياً في المشفي. يرجى مراجعة إدارة المستشفي.",
+          'IDLE'
+        );
+      }
+
+      let docsPrompt = "أهلاً بك في مستشفى برج الأطباء. الرجاء إرسال رقم الطبيب الذي تريد التسجيل لديه:\n";
+      activeDocs.forEach((doc, idx) => {
+        docsPrompt += `\n*${idx + 1}* - ${doc.name} (${doc.specialty})`;
+      });
+
+      // Reset session values for selection clean slate
+      session.patient_name = null;
+      session.selected_doctor_id = null;
+      session.selected_shift = null;
+      session.selected_schedule_id = null;
+      session.selected_date = null;
+
+      return outputReply(docsPrompt, 'SELECTING_DOCTOR');
+    } else {
+      return outputReply(
+        "مرحباً بك في مستشفى برج الأطباء. لإجراء حجز عيادات جديد، يرجى إرسال كلمة 'تسجيل' أو الرقم '1' للمباشرة في حجز دورك.",
+        'IDLE'
+      );
+    }
+  }
+
+  if (state === 'SELECTING_DOCTOR') {
+    const selectedIdx = parseInt(messageText) - 1;
+    const activeDocs = db.doctors.filter(d => d.is_active);
+
+    if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= activeDocs.length) {
+      return outputReply(
+        "عذراً، لم أتمكن من فهم طلبك. الرجاء الالتزام بالخيارات المتاحة وإرسال رقم الطبيب الصحيح.",
+        'SELECTING_DOCTOR'
+      );
+    }
+
+    const doctor = activeDocs[selectedIdx];
+    session.selected_doctor_id = doctor.id;
+
+    const docSchedules = db.schedules.filter(s => s.doctor_id === doctor.id);
+    if (docSchedules.length === 0) {
+      let failPrompt = `عذراً، الطبيب *${doctor.name}* لا يوجد لديه عيادات مجدولة هذا الأسبوع حالياً.\n`;
+      failPrompt += "يرجى اختيار طبيب آخر من القائمة التالية:\n";
+      activeDocs.forEach((doc, idx) => {
+        failPrompt += `\n*${idx + 1}* - ${doc.name} (${doc.specialty})`;
+      });
+      return outputReply(failPrompt, 'SELECTING_DOCTOR');
+    }
+
+    // Step 2: Check multi shift on same day
+    const hasMultipleShifts = checkMultipleShifts(doctor.id, db.schedules);
+    if (hasMultipleShifts) {
+      session.selected_shift = null;
+      return outputReply(
+        "الطبيب متاح في فترتين، يرجى اختيار الفترة:\n1. صباحية\n2. مسائية",
+        'SELECTING_SHIFT'
+      );
+    } else {
+      // Skip to Day selection
+      session.selected_shift = null;
+      const { prompt } = getDatesPromptForDoctor(doctor, null, db.schedules, db.bookings);
+      return outputReply(prompt, 'SELECTING_DAY');
+    }
+  }
+
+  if (state === 'SELECTING_SHIFT') {
+    const txt = messageText.trim();
+    if (txt === '1' || txt.includes('صباح')) {
+      session.selected_shift = 'morning';
+    } else if (txt === '2' || txt.includes('مساء')) {
+      session.selected_shift = 'evening';
+    } else {
+      return outputReply(
+        "الطبيب متاح في فترتين، يرجى اختيار الفترة:\n1. صباحية\n2. مسائية",
+        'SELECTING_SHIFT'
+      );
+    }
+
+    const doctor = db.doctors.find(d => d.id === session.selected_doctor_id!)!;
+    const { prompt } = getDatesPromptForDoctor(doctor, session.selected_shift, db.schedules, db.bookings);
+    return outputReply(prompt, 'SELECTING_DAY');
+  }
+
+  if (state === 'SELECTING_DAY') {
+    const selectedIdx = parseInt(messageText) - 1;
+    const doctor = db.doctors.find(d => d.id === session.selected_doctor_id!)!;
+    
+    const { options } = getDatesPromptForDoctor(doctor, session.selected_shift, db.schedules, db.bookings);
+
+    if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= options.length) {
+      return outputReply(
+        "عذراً، الرجاء اختيار يوم من الأيام المحددة لعيادة الطبيب",
+        'SELECTING_DAY'
+      );
+    }
+
+    const option = options[selectedIdx];
+
+    // Constraint B (Capacity Check)
+    const currentBookings = db.bookings.filter(b => b.doctor_id === doctor.id && b.booking_date === option.date && b.status !== 'cancelled').length;
+    if (currentBookings >= option.schedule.max_capacity) {
+      return outputReply("اكتمل التسجيل في هذا اليوم، الرجاء اختيار يوم آخر", 'SELECTING_DAY');
+    }
+
+    // Constraint C (Anti-Spam / Limit Check)
+    if (doctor.limit_two_patients_per_number) {
+      const patientBookings = db.bookings.filter(b => b.doctor_id === doctor.id && b.patient_phone === phone && b.status !== 'cancelled').length;
+      if (patientBookings >= 2) {
+        // Reset state and reply apology
+        session.current_state = 'IDLE';
+        session.selected_doctor_id = null;
+        session.selected_shift = null;
+        session.selected_schedule_id = null;
+        session.selected_date = null;
+        db.bot_sessions[phone] = session;
+        writeDb(db);
+        return outputReply(
+          "عذراً، لقد تم الوصول إلى الحد الأقصى للتسجيل (مريضين كحد أقصى) لهذا الطبيب من رقم هذا الهاتف.",
+          'IDLE'
+        );
+      }
+    }
+
+    // Passed! Go to AWAITING_NAME
+    session.selected_schedule_id = option.schedule.id;
+    session.selected_date = option.date;
+
+    return outputReply("يوجد متسع، الرجاء كتابة اسم المريض الرباعي لتأكيد الحجز", 'AWAITING_NAME');
+  }
+
+  if (state === 'AWAITING_NAME') {
+    const doctorId = session.selected_doctor_id!;
+    const dateStr = session.selected_date!;
+    const nameInput = messageText.trim();
+
+    // Word count safety check
+    const wordsCount = nameInput.split(/\s+/).length;
+    if (wordsCount < 2) {
+      return outputReply("يرجى كتابة اسم المريض الثلاثي أو الرباعي بشكل صحيح لتأكيد وحفظ الحجز.", 'AWAITING_NAME');
+    }
+
+    // Check duplicate name for this specific doctor on this specific date
+    const nameExists = db.bookings.some(b => 
+      b.doctor_id === doctorId && 
+      b.booking_date === dateStr && 
+      b.patient_name.trim().toLowerCase() === nameInput.toLowerCase() && 
+      b.status !== 'cancelled'
+    );
+
+    if (nameExists) {
+      return outputReply(
+        "هذا الاسم مسجل مسبقاً، يرجى كتابة الاسم الثلاثي أو إضافة اللقب",
+        'AWAITING_NAME'
+      );
+    }
+
+    const schedule = db.schedules.find(s => s.id === session.selected_schedule_id!)!;
+    
+    // Assign Sequential Queue Number
+    const existingBookings = db.bookings.filter(b => b.doctor_id === doctorId && b.booking_date === dateStr && b.status !== 'cancelled');
+    const nextQueue = existingBookings.length > 0 ? Math.max(...existingBookings.map(b => b.queue_number)) + 1 : 1;
+
+    // Save actual booking to database (Supabase mockup db state)
+    const newBooking: Booking = {
+      id: `book-${Date.now()}`,
+      doctor_id: doctorId,
+      schedule_id: schedule.id,
+      patient_name: nameInput,
+      patient_phone: phone,
+      booking_date: dateStr,
+      queue_number: nextQueue,
+      status: 'pending', // Starts pending payment validation
+      payment_status: 'pending',
+      verified_by_whatsapp: true,
+      created_at: getYemenTime().toISOString()
+    };
+
+    db.bookings.push(newBooking);
+
+    // Decrement capacity
+    const schIdx = db.schedules.findIndex(s => s.id === schedule.id);
+    if (schIdx !== -1) {
+      db.schedules[schIdx].available_capacity = Math.max(0, db.schedules[schIdx].available_capacity - 1);
+    }
+
+    // Calculate deadline Date + 2 days
+    const deadlineDate = new Date();
+    deadlineDate.setDate(deadlineDate.getDate() + 2);
+    const deadlineStr = deadlineDate.toISOString().split('T')[0];
+
+    const isMorning = parseInt(schedule.start_time.split(':')[0]) < 13;
+    const shiftLabel = isMorning ? 'صباحية' : 'مسائية';
+    const dayLabel = getDayNameArabic(schedule.day_of_week);
+    const circleQueue = getCircledNumber(nextQueue);
+
+    const successMsg = `تم تأكيد الحجز بنجاح،
+الاسم: ${nameInput}
+رقمك هو: ${circleQueue}
+الفترة: ${shiftLabel}
+موعدك هو: ( ${dayLabel} ) ( ${dateStr} )
+نتمنى لكم دوام الصحة والعافية.
+(يرجى تأكيد الحجز بواسطة دفع رسوم التسجيل خلال يومين من هذا التاريخ ${deadlineStr}، وإلا سيعتبر الحجز لاغياً، وشكراً).`;
+
+    // Clear session state
+    db.bot_sessions[phone] = {
+      ...session,
+      current_state: 'IDLE',
+      patient_name: null,
+      selected_doctor_id: null,
+      selected_shift: null,
+      selected_schedule_id: null,
+      selected_date: null,
+      last_interaction_at: getYemenTime().toISOString()
+    };
+
+    writeDb(db);
+    return outputReply(successMsg, 'IDLE');
+  }
+
+  return outputReply("مرحباً بك. يرجى إرسال كلمة 'تسجيل' لبدء حجز موعد طبي جديد.", 'IDLE');
+}
+
+// -------------------------------------------------------------------------
+// SIMULATOR INTERACTIVE HELPER
+// -------------------------------------------------------------------------
+app.post('/api/simulator/send-message', (req, res) => {
+  const { phone, message } = req.body;
+  if (!phone || !message) {
+    return res.status(400).json({ error: 'الحقول المطلوبة مفقودة' });
+  }
+
+  const mockMetaMsg = {
+    type: 'text',
+    from: phone,
+    text: { body: message }
+  };
+
+  const responseText = handleWhatsappFlow(phone, mockMetaMsg);
+  const db = readDb();
+  const session = db.bot_sessions[phone] || null;
+
+  res.json({
+    phone,
+    sentMessage: message,
+    receivedReply: responseText,
+    currentSessionState: session ? session.current_state : 'IDLE',
+    sessionDetails: session
+  });
+});
+
+// -------------------------------------------------------------------------
+// VITE CLIENT INTEGRATION
+// -------------------------------------------------------------------------
+
+async function startServer() {
+  // Vite integration middleware
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`full-stack portal bound on http://0.0.0.0:${PORT}`);
+    console.log(`Persisting DB to: ${DB_FILE}`);
+  });
+}
+
+startServer();

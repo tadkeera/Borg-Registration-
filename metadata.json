@@ -1,0 +1,6 @@
+{
+  "name": "نظام ادارة التسجيل في مستشفى برج الاطباء",
+  "description": "نظام متكامل لإدارة تسجيل وحجوزات المرضى والتحكم بجداول الأطباء والربط مع الواتساب لمستشفى برج الأطباء",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
