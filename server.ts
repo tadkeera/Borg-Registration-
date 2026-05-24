@@ -109,6 +109,7 @@ const defaultDb: DbState = {
   bot_sessions: {},
   whatsapp_logs: [],
   users: [
+    { id: 'u-tadkeera', username: 'tadkeera@gmail.com', password: 'WALEED770@', role: 'admin', employee_name: 'مدير تذكرة (Tadkeera Admin)' },
     { id: 'u-1', username: 'admin', password: '123', role: 'admin', employee_name: 'مدير النظام الرئيسي' },
     { id: 'u-2', username: 'receptionist', password: 'receptionist', role: 'receptionist', employee_name: 'موظف الاستقبال الافتراضي' }
   ]
@@ -117,19 +118,67 @@ const defaultDb: DbState = {
 // Initialize and Seed JSON Database file - Force a clean start as requested
 fs.writeFileSync(DB_FILE, JSON.stringify(defaultDb, null, 2), 'utf-8');
 
+// Helper to auto sync configuration user with Supabase Auth if credentials exist
+async function syncAdminUserToSupabase(email: string, pass: string) {
+  try {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+    if (!supabaseUrl || !supabaseKey) return; // Supabase not configured yet
+    const supabase = getSupabase();
+    
+    // Check if user has auth module available or write a user to Auth
+    // Since service role key can create users directly, we can try using admin API:
+    if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      const { data: listData, error: listError } = await supabase.auth.admin.listUsers();
+      if (!listError && listData && listData.users) {
+        const userExists = listData.users.some((u: any) => u.email === email);
+        if (!userExists) {
+          console.log(`[SupabaseSync] Creating admin user ${email} in Supabase Auth via admin API...`);
+          await supabase.auth.admin.createUser({
+            email,
+            password: pass,
+            email_confirm: true,
+            user_metadata: { role: 'admin', name: 'مدير تذكرة (Tadkeera Admin)' }
+          });
+        }
+      }
+    } else {
+      // Direct signup fallback for Anon Key
+      console.log(`[SupabaseSync] Attempting regular signup fallback for ${email}...`);
+      await supabase.auth.signUp({
+        email,
+        password: pass,
+        options: {
+          data: { role: 'admin', name: 'مدير تذكرة (Tadkeera Admin)' }
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('[SupabaseSync] Skipping automated Supabase Auth sync (expected if DB schema differs or credentials lack privileges):', err);
+  }
+}
+
+// Run initial Sync in background
+syncAdminUserToSupabase('tadkeera@gmail.com', 'WALEED770@').catch(() => {});
+
 function readDb(): DbState {
   try {
     const data = fs.readFileSync(DB_FILE, 'utf-8');
     const db = JSON.parse(data);
     if (!db.users) {
       db.users = [
+        { id: 'u-tadkeera', username: 'tadkeera@gmail.com', password: 'WALEED770@', role: 'admin', employee_name: 'مدير تذكرة (Tadkeera Admin)' },
         { id: 'u-1', username: 'admin', password: '123', role: 'admin', employee_name: 'مدير النظام الرئيسي' },
         { id: 'u-2', username: 'receptionist', password: 'receptionist', role: 'receptionist', employee_name: 'موظف الاستقبال الافتراضي' }
       ];
     } else {
+      const hasTadkeera = db.users.some((u: any) => u.username.trim().toLowerCase() === 'tadkeera@gmail.com');
+      if (!hasTadkeera) {
+        db.users.push({ id: 'u-tadkeera', username: 'tadkeera@gmail.com', password: 'WALEED770@', role: 'admin', employee_name: 'مدير تذكرة (Tadkeera Admin)' });
+      }
       db.users = db.users.map((u: any) => {
         if (!u.employee_name) {
-          u.employee_name = u.role === 'admin' ? 'مدير النظام الرئيسي' : 'موظف الاستقبال الافتراضي';
+          u.employee_name = u.role === 'admin' ? (u.username === 'tadkeera@gmail.com' ? 'مدير تذكرة (Tadkeera Admin)' : 'مدير النظام الرئيسي') : 'موظف الاستقبال الافتراضي';
         }
         return u;
       });
