@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Booking, Doctor, Schedule, BookingStatus, PaymentStatus } from '../types';
 import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleAlert, PlusSquare, Trash2, X, CheckSquare, Coins, CalendarDays, Key, Hospital, ArrowLeft, Clock, AlertTriangle, CheckCircle, ChevronLeft } from 'lucide-react';
 import { HOSPITAL_LOGO } from '../utils/constants';
@@ -31,16 +31,58 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
   const isAdmin = role === 'admin';
   const [selectedSchId, setSelectedSchId] = useState<string | null>(null);
 
+  // New Date and Doctor Name filters for doctor cards view
+  const [filterDate, setFilterDate] = useState<string>(getYemenTime().toISOString().split('T')[0]);
+  const [filterDoctorId, setFilterDoctorId] = useState<string>('all');
+
   // Filters for selected scheduler's bookings
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [paymentFilter, setPaymentFilter] = useState<string>('all');
+  const [deleteBookingId, setDeleteBookingId] = useState<string | null>(null);
 
   // Manual booking modal
   const [showAddModal, setShowAddModal] = useState(false);
   const [manualName, setManualName] = useState('');
   const [manualPhone, setManualPhone] = useState('967');
-  const [manualDate, setManualDate] = useState(getYemenTime().toISOString().split('T')[0]);
+  const [manualDate, setManualDate] = useState(filterDate);
+
+  // Sync manual booking date with current filterDate
+  useEffect(() => {
+    setManualDate(filterDate);
+  }, [filterDate]);
+
+  // Helpers for mapping date to day of week
+  const getDayOfWeekFromDate = (dateStr: string) => {
+    if (!dateStr) return -1;
+    const d = new Date(dateStr);
+    const jsDay = d.getDay(); // 0 = Sun, 1 = Mon, 2 = Tue, 3 = Wed, 4 = Thu, 5 = Fri, 6 = Sat
+    if (jsDay === 6) return 0; // Sat
+    if (jsDay === 0) return 1; // Sun
+    if (jsDay === 1) return 2; // Mon
+    if (jsDay === 2) return 3; // Tue
+    if (jsDay === 3) return 4; // Wed
+    if (jsDay === 4) return 5; // Thu
+    return -1; // Friday or weekend
+  };
+
+  const getArabicDayName = (dateStr: string) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    const day = d.getDay();
+    const dayNames = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+    return dayNames[day];
+  };
+
+  const targetDayOfWeek = getDayOfWeekFromDate(filterDate);
+
+  // Filter schedules based on today/selected date and doctor name filter
+  const displayedSchedules = schedules.filter(sch => {
+    if (filterDoctorId !== 'all' && sch.doctor_id !== filterDoctorId) {
+      return false;
+    }
+    return sch.day_of_week === targetDayOfWeek;
+  });
 
   // Ticket modal
   const [activeTicket, setActiveTicket] = useState<Booking | null>(null);
@@ -106,13 +148,9 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
     }
   };
 
-  const handleDeleteClick = async (id: string) => {
-    if (!confirm('هل أنت متأكد من رغبتك في حذف هذا الحجز نهائياً من سجلات العيادة؟')) return;
-    try {
-      await onDeleteBooking(id);
-    } catch (err: any) {
-      alert(err.message || 'فشل حذف السجل.');
-    }
+  const handleDeleteClick = (id: string) => {
+    if (!isAdmin) return;
+    setDeleteBookingId(id);
   };
 
   // Helper to get doctor corresponding to schedule
@@ -139,23 +177,69 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
       {/* 1. MASTER VIEW: Doctor schedule cards */}
       {!selectedSchId ? (
         <div className="space-y-6">
-          <div className="border-b border-indigo-100/40 pb-4">
-            <h2 className="text-lg font-black text-slate-800 flex items-center gap-1.5">
-              <Hospital className="h-5 w-5 text-blue-700" />
-              سجل معاينات الأطباء والعيادات المتاحة
-            </h2>
-            <p className="text-xs text-slate-500 mt-1 font-bold">
-              اضغط على كرت الطبيب أدناه لاستعراض وتوثيق ملفات المرضى المسجلين ووضع أدوار الحجز.
-            </p>
+          <div className="border-b border-indigo-100/40 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-black text-slate-800 flex items-center gap-1.5">
+                <Hospital className="h-5 w-5 text-blue-700" />
+                سجل معاينات الأطباء والعيادات المتاحة
+              </h2>
+              <p className="text-xs text-slate-500 mt-1 font-bold">
+                اضغط على كرت الطبيب أدناه لاستعراض وتوثيق ملفات المرضى المسجلين ووضع أدوار الحجز.
+              </p>
+            </div>
+            
+            {/* Display current date clearly */}
+            <div className="bg-blue-50/70 border border-blue-100 text-blue-800 px-4 py-2 rounded-2xl flex items-center gap-2 text-xs">
+              <CalendarClock className="h-4 w-4 text-blue-600" />
+              <div>
+                <span className="block font-black">تاريخ اليوم المحدد:</span>
+                <span className="font-mono font-bold text-blue-700">{getArabicDayName(filterDate)}، {filterDate}</span>
+              </div>
+            </div>
           </div>
 
-          {schedules.length === 0 ? (
-            <div className="bg-white p-8 rounded-2xl border border-dashed border-slate-200 text-center text-slate-400 text-xs">
-              لا توجد عيادات أو فترات مجدولة حالياً للأطباء في لوحة الإدارة.
+          {/* Interactive Date & Doctor Filters Panel */}
+          <div className="bg-slate-50 p-4 border border-slate-150 rounded-2xl flex flex-col md:flex-row md:items-center gap-4 justify-between shadow-sm">
+            <div className="flex items-center gap-2">
+              <Filter className="h-4 w-4 text-slate-500" />
+              <span className="text-xs font-black text-slate-700">خيارات تصفية العيادات المجدولة:</span>
+            </div>
+            
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex flex-col">
+                <label className="text-[10px] font-black text-slate-500 mb-1">اختر التاريخ:</label>
+                <input
+                  type="date"
+                  value={filterDate}
+                  onChange={(e) => setFilterDate(e.target.value)}
+                  className="px-3.5 py-1.5 text-xs bg-white border border-slate-200 text-slate-850 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-bold"
+                />
+              </div>
+
+              <div className="flex flex-col">
+                <label className="text-[10px] font-black text-slate-500 mb-1">تصفية باسم الطبيب:</label>
+                <select
+                  value={filterDoctorId}
+                  onChange={(e) => setFilterDoctorId(e.target.value)}
+                  className="px-3.5 py-1.5 text-xs bg-white border border-slate-200 text-slate-850 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-bold min-w-[200px]"
+                >
+                  <option value="all">كل الأطباء (All Doctors)</option>
+                  {doctors.map(d => (
+                    <option key={d.id} value={d.id}>{d.name} ({d.specialty})</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {displayedSchedules.length === 0 ? (
+            <div className="bg-white p-12 rounded-2xl border border-dashed border-slate-200 text-center text-slate-400 text-xs">
+              <p className="font-black text-slate-500 text-sm">لا توجد عيادات أو فترات مجدولة حالياً في هذا اليوم المختار.</p>
+              <p className="mt-1 text-slate-400">يرجى اختيار تاريخ مغاير أو إضافة جداول للأطباء في لوحة المواعيد.</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {schedules.map((sch) => {
+              {displayedSchedules.map((sch) => {
                 const doc = getDoctorForSchedule(sch);
                 if (!doc) return null;
                 const isFull = sch.available_capacity === 0;
@@ -221,19 +305,22 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
 
                     <div className="flex items-center justify-between border-t border-slate-100 pt-4">
                       <div className="text-right">
-                        <span className="block text-[8px] uppercase tracking-wider text-slate-400 font-bold">الحصيلة العظمى</span>
-                        <span className="text-xs font-black text-slate-700 font-mono">{sch.max_capacity} حالات باليوم</span>
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-400 font-bold">السعة الكلية</span>
+                        <span className="text-xl font-black text-slate-800 font-mono block mt-1 tracking-wider">{sch.max_capacity} حالات/اليوم</span>
                       </div>
                       <div className="text-left font-sans">
                         {isFull ? (
-                          <span className="inline-flex items-center justify-center bg-red-650 text-white text-[10px] font-black px-2.5 py-1 rounded-xl shadow-sm border border-red-500 animate-pulse">
-                            مكتمل السعة (Full) 🚫
-                          </span>
+                          <div className="text-left">
+                            <span className="block text-[10px] text-slate-400 font-bold uppercase text-left mb-1">المقاعد المتبقية</span>
+                            <span className="inline-flex items-center justify-center text-red-600 font-black text-xs bg-red-50 px-3 py-1.5 rounded-xl border border-red-200 animate-pulse text-center">
+                              المقاعد ممتلئة / اكتمل الحجز 🚫
+                            </span>
+                          </div>
                         ) : (
                           <div className="text-left">
-                            <span className="block text-[8px] text-slate-400 font-black uppercase">الشواغر المتبقية</span>
-                            <span className="text-xs font-black font-mono text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
-                              {sch.available_capacity} شواغر متاحة
+                            <span className="block text-[10px] text-slate-400 font-bold uppercase text-left mb-1">المقاعد المتبقية</span>
+                            <span className="text-xl font-black font-mono text-emerald-600 block bg-emerald-50 px-3 py-1 rounded-lg border border-emerald-100 text-center">
+                              {sch.available_capacity} مقاعد متاحة
                             </span>
                           </div>
                         )}
@@ -364,7 +451,18 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
 
                           {/* Patient name */}
                           <td className="px-4 py-3 whitespace-nowrap">
-                            <div className="font-sans font-black text-slate-800">{b.patient_name}</div>
+                            <div className="flex items-center gap-2">
+                              <div className="font-sans font-black text-slate-800">{b.patient_name}</div>
+                              {isAdmin && (
+                                <button
+                                  onClick={() => handleDeleteClick(b.id)}
+                                  className="p-1 text-red-500 hover:bg-red-50 rounded border border-red-100 transition-all duration-200 cursor-pointer"
+                                  title="حذف الحجز"
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </button>
+                              )}
+                            </div>
                             <div className="text-[9px] text-slate-400 mt-0.5">
                               {b.verified_by_whatsapp ? (
                                 <span className="text-emerald-600 font-black">🤖 حجز بالبوت</span>
@@ -573,18 +671,24 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                 />
               </div>
               <div>
-                <h4 className="text-sm font-black text-slate-850">مستشفى برج الأطباء التخصصي</h4>
-                <p className="text-[9px] text-slate-405">صنعاء، اليمن - تذكرة مراجعة آلية</p>
+                <h4 className="text-sm font-black text-slate-850">مستشفى برج الأطباء</h4>
+                <p className="text-[9px] text-slate-405">عدن، اليمن - تذكرة مراجعة آلية</p>
               </div>
 
               <div className="border-t border-b border-dashed border-slate-200 py-3 space-y-2">
-                <span className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider">رقم دور الدخول المتتالي</span>
+                <span className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider">رقم الدور</span>
                 <span className="text-4xl font-extrabold text-blue-700 font-mono tracking-tight block">
                   {activeTicket.queue_number}
                 </span>
-                <span className="inline-flex items-center px-2 py-0.5 text-[9px] font-black bg-blue-50 text-blue-700 rounded-md border border-blue-100">
-                  {ARABIC_DAYS[schedules.find(s => s.id === activeTicket.schedule_id)?.day_of_week ?? 0]} (الفترة: {schedules.find(s => s.id === activeTicket.schedule_id)?.start_time})
-                </span>
+                {(() => {
+                  const sch = schedules.find(s => s.id === activeTicket.schedule_id);
+                  const shiftName = sch?.start_time === '15:00' ? 'مسائية (Evening)' : 'صباحية (Morning)';
+                  return (
+                    <span className="inline-flex items-center px-2 py-0.5 text-[9px] font-black bg-blue-50 text-blue-700 rounded-md border border-blue-100">
+                      {ARABIC_DAYS[sch?.day_of_week ?? 0]} (الفترة: {shiftName})
+                    </span>
+                  );
+                })()}
               </div>
 
               <div className="text-right space-y-1.5 text-xs">
@@ -630,6 +734,45 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                 className="px-3 py-2 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
               >
                 إغلاق
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Patient Booking Confirmation Popup Modal */}
+      {deleteBookingId && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" dir="rtl">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-xl max-w-sm w-full p-6 text-center animate-in fade-in zoom-in duration-200">
+            <div className="h-12 w-12 rounded-full bg-red-50 text-red-500 flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="h-6 w-6" />
+            </div>
+            <h3 className="text-sm font-black text-slate-800 mb-2">تأكيد حذف الحجز</h3>
+            <p className="text-xs text-slate-500 mb-6 font-bold leading-relaxed">
+              هل أنت متأكد من رغبتك في حذف هذا الحجز نهائياً من سجلات العيادة؟
+            </p>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                onClick={async () => {
+                  if (deleteBookingId) {
+                    try {
+                      await onDeleteBooking(deleteBookingId);
+                    } catch (err: any) {
+                      alert(err.message || 'فشل حذف الحجز.');
+                    } finally {
+                      setDeleteBookingId(null);
+                    }
+                  }
+                }}
+                className="px-4 py-2 bg-red-600 text-white text-xs font-black rounded-xl hover:bg-red-700 transition-all cursor-pointer flex-1"
+              >
+                نعم (Yes)
+              </button>
+              <button
+                onClick={() => setDeleteBookingId(null)}
+                className="px-4 py-2 bg-slate-100 text-slate-700 text-xs font-black rounded-xl hover:bg-slate-200 transition-all cursor-pointer flex-1"
+              >
+                لا (No)
               </button>
             </div>
           </div>

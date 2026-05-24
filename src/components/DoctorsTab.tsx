@@ -23,6 +23,7 @@ export default function DoctorsTab({ doctors, role, onAddDoctor, onEditDoctor, o
   const [allowSecondWeek, setAllowSecondWeek] = useState(false);
   const [limitTwoPatients, setLimitTwoPatients] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteDoctorId, setDeleteDoctorId] = useState<string | null>(null);
   
   // States for loaders
   const [loading, setLoading] = useState(false);
@@ -85,21 +86,9 @@ export default function DoctorsTab({ doctors, role, onAddDoctor, onEditDoctor, o
     setSuccess('');
   };
 
-  const handleDeleteClick = async (id: string) => {
+  const handleDeleteClick = (id: string) => {
     if (!isAdmin) return;
-    if (!confirm('تحذير: سيعمل حذف هذا الطبيب على إلغاء جداول مواعيده وحجوزات مرضاه المرتبطة فوراً. هل أنت متأكد من المتابعة والحذف؟')) return;
-    
-    setLoading(true);
-    setError('');
-    setSuccess('');
-    try {
-      await onDeleteDoctor(id);
-      setSuccess('تم حذف الطبيب وجميع جداوله المترتبة بنجاح.');
-    } catch (err: any) {
-      setError(err.message || 'فشل حذف الطبيب.');
-    } finally {
-      setLoading(false);
-    }
+    setDeleteDoctorId(id);
   };
 
   return (
@@ -254,7 +243,19 @@ export default function DoctorsTab({ doctors, role, onAddDoctor, onEditDoctor, o
                     {doctors.map((doc) => (
                       <tr key={doc.id} id={`row-${doc.id}`} className="hover:bg-slate-50/50 transition-colors">
                         <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="text-xs font-black text-slate-800">{doc.name}</div>
+                          <div className="flex items-center gap-2">
+                            <div className="text-xs font-black text-slate-800">{doc.name}</div>
+                            {isAdmin && (
+                              <button
+                                id={`del-btn-inline-${doc.id}`}
+                                onClick={() => handleDeleteClick(doc.id)}
+                                className="p-1 text-red-500 hover:bg-red-50 rounded border border-red-100 transition-all duration-200"
+                                title="حذف الطبيب"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            )}
+                          </div>
                           <div className="flex flex-wrap gap-1 mt-1">
                             {doc.allow_second_week_booking && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100">
@@ -321,6 +322,50 @@ export default function DoctorsTab({ doctors, role, onAddDoctor, onEditDoctor, o
           </div>
         </div>
       </div>
+
+      {/* Delete Doctor Confirmation Popup Modal */}
+      {deleteDoctorId && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" dir="rtl">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-xl max-w-sm w-full p-6 text-center animate-in fade-in zoom-in duration-200">
+            <div className="h-12 w-12 rounded-full bg-red-50 text-red-500 flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="h-6 w-6" />
+            </div>
+            <h3 className="text-sm font-black text-slate-800 mb-2">تأكيد حذف الطبيب</h3>
+            <p className="text-xs text-slate-500 mb-6 font-bold leading-relaxed">
+              تحذير: سيعمل حذف هذا الطبيب على إلغاء جداول مواعيده وحجوزات مرضاه المرتبطة فوراً. هل أنت متأكد من المتابعة والحذف؟
+            </p>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                onClick={async () => {
+                  if (deleteDoctorId) {
+                    setLoading(true);
+                    setError('');
+                    setSuccess('');
+                    try {
+                      await onDeleteDoctor(deleteDoctorId);
+                      setSuccess('تم حذف الطبيب وجميع جداوله المترتبة بنجاح.');
+                    } catch (err: any) {
+                      setError(err.message || 'فشل حذف الطبيب.');
+                    } finally {
+                      setLoading(false);
+                      setDeleteDoctorId(null);
+                    }
+                  }
+                }}
+                className="px-4 py-2 bg-red-600 text-white text-xs font-black rounded-xl hover:bg-red-700 transition-all cursor-pointer flex-1"
+              >
+                نعم (Yes)
+              </button>
+              <button
+                onClick={() => setDeleteDoctorId(null)}
+                className="px-4 py-2 bg-slate-100 text-slate-700 text-xs font-black rounded-xl hover:bg-slate-200 transition-all cursor-pointer flex-1"
+              >
+                لا (No)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

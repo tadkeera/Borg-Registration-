@@ -29,6 +29,7 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
   // Quick inline capacity editing states
   const [editingCapacityId, setEditingCapacityId] = useState<string | null>(null);
   const [tempCapacity, setTempCapacity] = useState<number>(0);
+  const [deleteScheduleId, setDeleteScheduleId] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -69,6 +70,20 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
     const targetStartTime = shift === 'evening' ? '15:00' : '09:00';
     const targetEndTime = shift === 'evening' ? '19:00' : '13:00';
 
+    // Validation logic: allow scheduling the same doctor on the same day ONLY if the shifts are different
+    const isDuplicate = schedules.some(s => 
+      s.doctor_id === doctorId && 
+      s.day_of_week === dayOfWeek && 
+      s.start_time === targetStartTime &&
+      s.id !== editingId
+    );
+
+    if (isDuplicate) {
+      setError('عذراً، هذا الطبيب لديه عيادة مجدولة بالفعل في نفس هذه الفترة (الصباحية أو المسائية) في هذا اليوم.');
+      setLoading(false);
+      return;
+    }
+
     try {
       if (editingId) {
         await onEditSchedule(editingId, { max_capacity: maxCapacity, start_time: targetStartTime, end_time: targetEndTime });
@@ -93,21 +108,9 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
     setShift(s.start_time === '15:00' ? 'evening' : 'morning');
   };
 
-  const handleDeleteClick = async (id: string) => {
+  const handleDeleteClick = (id: string) => {
     if (!isAdmin) return;
-    if (!confirm('انتبه: حذف جدول مواعيد الطبيب سيلغي كافة حجوزات المرضى المجدولة في هذا اليوم تلقائياً. هل تؤكد المتابعة والحذف؟')) return;
-
-    setLoading(true);
-    setError('');
-    setSuccess('');
-    try {
-      await onDeleteSchedule(id);
-      setSuccess('تم حذف وقت العيادة وجدول الطبيب بنجاح.');
-    } catch (err: any) {
-      setError(err.message || 'فشل حذف الجدول.');
-    } finally {
-      setLoading(false);
-    }
+    setDeleteScheduleId(id);
   };
 
   return (
@@ -287,9 +290,20 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
                                 </span>
                               </td>
                               <td className="px-3 py-2.5 whitespace-nowrap">
-                                <div className="flex items-center text-xs text-slate-700 font-bold">
-                                  <Clock className="h-3.5 w-3.5 text-slate-400 ml-1.5 shrink-0" />
-                                  {s.start_time === '15:00' ? 'مسائية (Evening)' : 'صباحية (Morning)'}
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center text-xs text-slate-700 font-bold">
+                                    <Clock className="h-3.5 w-3.5 text-slate-400 ml-1.5 shrink-0" />
+                                    {s.start_time === '15:00' ? 'مسائية (Evening)' : 'صباحية (Morning)'}
+                                  </div>
+                                  {isAdmin && (
+                                    <button
+                                      onClick={() => handleDeleteClick(s.id)}
+                                      className="p-1 text-red-500 hover:bg-red-50 rounded border border-red-100 transition-all duration-200"
+                                      title="حذف هذا الموعد"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
                                 </div>
                               </td>
                               <td className="px-3 py-2.5 whitespace-nowrap text-center">
@@ -387,6 +401,50 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
           )}
         </div>
       </div>
+
+      {/* Delete Schedule Confirmation Popup Modal */}
+      {deleteScheduleId && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50" dir="rtl">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-xl max-w-sm w-full p-6 text-center animate-in fade-in zoom-in duration-200">
+            <div className="h-12 w-12 rounded-full bg-red-50 text-red-500 flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="h-6 w-6" />
+            </div>
+            <h3 className="text-sm font-black text-slate-800 mb-2">تأكيد حذف الموعد</h3>
+            <p className="text-xs text-slate-500 mb-6 font-bold leading-relaxed">
+              انتبه: حذف جدول مواعيد الطبيب سيلغي كافة حجوزات المرضى المجدولة في هذا اليوم تلقائياً. هل تؤكد المتابعة والحذف؟
+            </p>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                onClick={async () => {
+                  if (deleteScheduleId) {
+                    setLoading(true);
+                    setError('');
+                    setSuccess('');
+                    try {
+                      await onDeleteSchedule(deleteScheduleId);
+                      setSuccess('تم حذف وقت العيادة وجدول الطبيب بنجاح.');
+                    } catch (err: any) {
+                      setError(err.message || 'فشل حذف الجدول.');
+                    } finally {
+                      setLoading(false);
+                      setDeleteScheduleId(null);
+                    }
+                  }
+                }}
+                className="px-4 py-2 bg-red-600 text-white text-xs font-black rounded-xl hover:bg-red-700 transition-all cursor-pointer flex-1"
+              >
+                نعم (Yes)
+              </button>
+              <button
+                onClick={() => setDeleteScheduleId(null)}
+                className="px-4 py-2 bg-slate-100 text-slate-700 text-xs font-black rounded-xl hover:bg-slate-200 transition-all cursor-pointer flex-1"
+              >
+                لا (No)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

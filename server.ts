@@ -328,7 +328,7 @@ app.get('/api/schedules', (req, res) => {
 });
 
 app.post('/api/schedules', (req, res) => {
-  const { doctor_id, day_of_week, max_capacity, shift } = req.body;
+  const { doctor_id, day_of_week, max_capacity, start_time: body_start, end_time: body_end, shift } = req.body;
   const db = readDb();
   
   // Valid working days constraint Sat-Thu (0-5)
@@ -337,13 +337,17 @@ app.post('/api/schedules', (req, res) => {
   }
 
   // Map shift to start and end times
-  const start_time = shift === 'evening' ? '15:00' : '09:00';
-  const end_time = shift === 'evening' ? '19:00' : '13:00';
+  const start_time = body_start || (shift === 'evening' ? '15:00' : '09:00');
+  const end_time = body_end || (shift === 'evening' ? '19:00' : '13:00');
 
   // Check unique constraints: (doctor_id, day_of_week, start_time)
-  const isDuplicate = db.schedules.some(s => s.doctor_id === doctor_id && s.day_of_week === day_of_week && s.start_time === start_time);
+  const isDuplicate = db.schedules.some(s => 
+    s.doctor_id === doctor_id && 
+    s.day_of_week === parseInt(day_of_week) && 
+    s.start_time === start_time
+  );
   if (isDuplicate) {
-    return res.status(400).json({ error: 'عذراً، هذه الفترة (الصباحية أو المسائية) مجدولة مسبقاً لهذا الطبيب في هذا اليوم.' });
+    return res.status(400).json({ error: 'عذراً، هذا الطبيب لديه عيادة مجدولة بالفعل في نفس هذه الفترة (الصباحية أو المسائية) في هذا اليوم.' });
   }
 
   const capacity = parseInt(max_capacity) || 15;
