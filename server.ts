@@ -9,6 +9,31 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { DbState, Doctor, Schedule, Booking, WhatsAppLog, BotSession, BotState, BookingStatus, PaymentStatus } from './src/types';
+import dotenv from 'dotenv';
+import { createClient } from '@supabase/supabase-js';
+
+// Load environment variables from .env if present
+dotenv.config();
+
+// Safe Lazy-Initialized Supabase Client Helper
+let supabaseClient: any = null;
+
+export function getSupabase() {
+  if (!supabaseClient) {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl) {
+      throw new Error('Supabase URL configuration is missing (NEXT_PUBLIC_SUPABASE_URL / SUPABASE_URL)');
+    }
+    if (!supabaseKey) {
+      throw new Error('Supabase Key configuration is missing (SUPABASE_SERVICE_ROLE_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY)');
+    }
+
+    supabaseClient = createClient(supabaseUrl, supabaseKey);
+  }
+  return supabaseClient;
+}
 
 const app = express();
 const PORT = 3000;
@@ -170,6 +195,55 @@ function webhookRateLimit(req: express.Request, res: express.Response, next: exp
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', serverTime: getYemenTime().toISOString(), timezone: 'Asia/Aden (UTC+3)' });
+});
+
+// Supabase configuration verification endpoint
+app.get('/api/supabase-status', async (req, res) => {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+  const hasServiceRole = !!process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !supabaseKey) {
+    return res.status(400).json({
+      configured: false,
+      error: 'لم يتم تكوين متغيرات بيئة Supabase بشكل كامل في Vercel أو البيئة الحالية.',
+      checks: {
+        supabaseUrl: !!supabaseUrl,
+        supabaseKey: !!supabaseKey,
+        hasServiceRole
+      },
+      hint: 'يرجى إدخال NEXT_PUBLIC_SUPABASE_URL و NEXT_PUBLIC_SUPABASE_ANON_KEY أو SUPABASE_SERVICE_ROLE_KEY في إعدادات البيئة (Environment Variables) بمشروع Vercel.'
+    });
+  }
+
+  try {
+    const supabase = getSupabase();
+    // Test a basic lightweight ping to check configuration connection
+    const { data, error } = await supabase.from('_dummy_table_test_').select('*').limit(1).maybeSingle();
+    
+    // An error about table not existing means we successfully connected but table doesn't exist (which is fine and expected!)
+    const isConnected = !error || (error.code !== 'PGRST301' && error.message?.includes('does not exist'));
+
+    return res.json({
+      configured: true,
+      connected: isConnected,
+      supabaseUrl: supabaseUrl.replace(/^(https:\/\/)[^.]+(\.supabase\.co)/, '$1***$2'), // Mask project id for health response privacy
+      authChecks: {
+        hasUrl: true,
+        hasKey: true,
+        keyType: hasServiceRole ? 'Service Role Key (Full Admin)' : 'Anon Key (Public API)'
+      },
+      message: isConnected ? 'تم الاتصال وقراءة المتغيرات بنجاح من الخادم!' : 'تم قراءة المتغيرات، ولكن فشل الاتصال مع م قاعدة البيانات.',
+      details: error || 'لا يـوجد أخـطاء'
+    });
+  } catch (err: any) {
+    return res.json({
+      configured: true,
+      connected: false,
+      error: err.message || 'فشل الاتصال بـ Supabase',
+      details: err
+    });
+  }
 });
 
 // 1. AUTHENTICATION & SECURITY
