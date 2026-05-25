@@ -622,13 +622,29 @@ app.post('/api/bookings', async (req, res) => {
 
     const { data: sch } = await supabase
       .from('schedules')
-      .select('available_capacity')
+      .select('available_capacity, start_time')
       .eq('id', schedule_id)
       .single();
 
     if (!sch || sch.available_capacity <= 0) {
       return res.status(400).json({ error: 'عذراً لا توجد سعة باقية للحجز في هذا الموعد.' });
     }
+
+    const startHour = parseInt(sch.start_time.split(':')[0]);
+    const shiftValue = startHour < 13 ? 'Morning' : 'Evening';
+
+    // Calculate next queue number for this doctor, date, and shift
+    const { data: qData } = await supabase
+      .from('bookings')
+      .select('queue_number')
+      .eq('doctor_id', doctor_id)
+      .eq('booking_date', booking_date)
+      .eq('shift', shiftValue);
+
+    const maxQ = qData && qData.length > 0
+      ? Math.max(...qData.map(b => b.queue_number || 0))
+      : 0;
+    const nextQueueNumber = Math.max(maxQ, qData?.length || 0) + 1;
 
     const { data, error } = await supabase
       .from('bookings')
@@ -638,7 +654,8 @@ app.post('/api/bookings', async (req, res) => {
         patient_name,
         patient_phone,
         booking_date,
-        queue_number: 0, // Assigned dynamically by DB Trigger
+        queue_number: nextQueueNumber,
+        shift: shiftValue,
         status: 'confirmed', 
         payment_status: 'pending',
         verified_by_whatsapp: false
@@ -1245,10 +1262,16 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
       timestamp: getYemenTime().toISOString()
     }]);
 
-    // Update Session in Supabase
+    // Update Session in Supabase directly using database columns
     const nextSession = {
-      ...session,
+      phone: cleanPhone,
       current_state: nextState,
+      patient_name: session.patient_name || null,
+      selected_doctor_id: session.selected_doctor_id || null,
+      selected_schedule_id: session.selected_schedule_id || null,
+      selected_day_offset: session.selected_day_offset || null,
+      selected_shift: session.selected_shift || null,
+      selected_date: session.selected_date || null,
       last_interaction_at: getYemenTime().toISOString()
     };
 
@@ -1569,6 +1592,22 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
 
     const schedule = activeSchedules?.find(s => s.id === session.selected_schedule_id!)!;
     
+    const startHour = parseInt(schedule.start_time.split(':')[0]);
+    const shiftValue = startHour < 13 ? 'Morning' : 'Evening';
+
+    // Calculate next queue_number for this doctor, date, and shift
+    const { data: qData } = await supabase
+      .from('bookings')
+      .select('queue_number')
+      .eq('doctor_id', doctorId)
+      .eq('booking_date', dateStr)
+      .eq('shift', shiftValue);
+
+    const maxQ = qData && qData.length > 0
+      ? Math.max(...qData.map(b => b.queue_number || 0))
+      : 0;
+    const nextQueueNumber = Math.max(maxQ, qData?.length || 0) + 1;
+
     // Save actual booking to database - Let Supabase PG trigger assign queue number and decrements capacity atomic-safe!
     const { data: insertedBooking, error: insertErr } = await supabase
       .from('bookings')
@@ -1578,7 +1617,8 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
         patient_name: nameInput,
         patient_phone: cleanPhone,
         booking_date: dateStr,
-        queue_number: 0, // Assigned by PG Trigger
+        queue_number: nextQueueNumber,
+        shift: shiftValue,
         status: 'pending',
         payment_status: 'pending',
         verified_by_whatsapp: true
