@@ -482,16 +482,17 @@ app.post('/api/schedules', async (req, res) => {
     const start_time = body_start || (shift === 'evening' ? '15:00' : '09:00');
     const end_time = body_end || (shift === 'evening' ? '19:00' : '13:00');
 
-    // Check duplicate
+    // Check duplicate: allow morning and evening shifts on the same day, block only if duplicate of same start_time (shift)
     const { data: existing } = await supabase
       .from('schedules')
       .select('id')
       .eq('doctor_id', doctor_id)
       .eq('day_of_week', parsedDay)
+      .eq('start_time', start_time)
       .maybeSingle();
 
     if (existing) {
-      return res.status(400).json({ error: 'عذراً، هذا الطبيب لديه عيادة مجدولة بالفعل في هذا اليوم.' });
+      return res.status(400).json({ error: 'عذراً، هذا الطبيب لديه عيادة مجدولة بالفعل في نفس هذه الفترة (الصباحية أو المسائية) في هذا اليوم.' });
     }
 
     const capacity = parseInt(max_capacity) || 15;
