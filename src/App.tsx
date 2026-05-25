@@ -55,6 +55,10 @@ export default function App() {
   useEffect(() => {
     if (isLoggedIn) {
       fetchAllData();
+      const intervalId = setInterval(() => {
+        fetchAllData();
+      }, 2000);
+      return () => clearInterval(intervalId);
     }
   }, [isLoggedIn]);
 
@@ -403,6 +407,7 @@ export default function App() {
                 onAddBooking={handleAddBooking}
                 onEditBooking={handleEditBooking}
                 onDeleteBooking={handleDeleteBooking}
+                onRefresh={fetchAllData}
               />
             )}
 

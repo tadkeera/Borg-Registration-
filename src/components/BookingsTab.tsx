@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Booking, Doctor, Schedule, BookingStatus, PaymentStatus } from '../types';
-import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleAlert, PlusSquare, Trash2, X, CheckSquare, Coins, CalendarDays, Key, Hospital, ArrowLeft, Clock, AlertTriangle, CheckCircle, ChevronLeft } from 'lucide-react';
+import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleAlert, PlusSquare, Trash2, X, CheckSquare, Coins, CalendarDays, Key, Hospital, ArrowLeft, Clock, AlertTriangle, CheckCircle, ChevronLeft, RefreshCw } from 'lucide-react';
 import { HOSPITAL_LOGO } from '../utils/constants';
 
 function getYemenTime(): Date {
@@ -23,13 +23,15 @@ interface BookingsTabProps {
   onAddBooking: (b: { doctor_id: string; schedule_id: string; patient_name: string; patient_phone: string; booking_date: string }) => Promise<void>;
   onEditBooking: (id: string, updates: { status?: BookingStatus; payment_status?: PaymentStatus; patient_name?: string }) => Promise<void>;
   onDeleteBooking: (id: string) => Promise<void>;
+  onRefresh?: () => Promise<void>;
 }
 
 const ARABIC_DAYS = ['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
 
-export default function BookingsTab({ bookings, doctors, schedules, role, receptionistName, onAddBooking, onEditBooking, onDeleteBooking }: BookingsTabProps) {
+export default function BookingsTab({ bookings, doctors, schedules, role, receptionistName, onAddBooking, onEditBooking, onDeleteBooking, onRefresh }: BookingsTabProps) {
   const isAdmin = role === 'admin';
   const [selectedSchId, setSelectedSchId] = useState<string | null>(null);
+  const [refreshingStatus, setRefreshingStatus] = useState(false);
 
   // New Date and Doctor Name filters for doctor cards view
   const [filterDate, setFilterDate] = useState<string>(getYemenTime().toISOString().split('T')[0]);
@@ -188,12 +190,30 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
               </p>
             </div>
             
-            {/* Display current date clearly */}
-            <div className="bg-blue-50/70 border border-blue-100 text-blue-800 px-4 py-2 rounded-2xl flex items-center gap-2 text-xs">
-              <CalendarClock className="h-4 w-4 text-blue-600" />
-              <div>
-                <span className="block font-black">تاريخ اليوم المحدد:</span>
-                <span className="font-mono font-bold text-blue-700">{getArabicDayName(filterDate)}، {filterDate}</span>
+            {/* Display current date and manual refresh button */}
+            <div className="flex flex-wrap items-center gap-2">
+              {onRefresh && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRefreshingStatus(true);
+                    onRefresh().finally(() => {
+                      setTimeout(() => setRefreshingStatus(false), 800);
+                    });
+                  }}
+                  className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 px-3.5 py-2.5 rounded-2xl flex items-center gap-2 text-xs font-black cursor-pointer transition-all shadow-sm active:scale-95 duration-200"
+                >
+                  <RefreshCw className={`h-4 w-4 text-blue-700 ${refreshingStatus ? 'animate-spin' : ''}`} />
+                  <span>تحديث يدوي للبيانات</span>
+                </button>
+              )}
+
+              <div className="bg-blue-50/70 border border-blue-100 text-blue-800 px-4 py-2 rounded-2xl flex items-center gap-2 text-xs">
+                <CalendarClock className="h-4 w-4 text-blue-600" />
+                <div>
+                  <span className="block font-black">تاريخ اليوم المحدد:</span>
+                  <span className="font-mono font-bold text-blue-700">{getArabicDayName(filterDate)}، {filterDate}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -359,8 +379,24 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
               </div>
             </div>
 
-            {isAdmin && (
-              <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2">
+              {onRefresh && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRefreshingStatus(true);
+                    onRefresh().finally(() => {
+                      setTimeout(() => setRefreshingStatus(false), 800);
+                    });
+                  }}
+                  className="px-3.5 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-black rounded-xl hover:bg-indigo-100 flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-95 duration-200"
+                >
+                  <RefreshCw className={`h-4 w-4 ${refreshingStatus ? 'animate-spin' : ''}`} />
+                  <span>تحديث البيانات 🔄</span>
+                </button>
+              )}
+
+              {isAdmin && (
                 <button
                   onClick={() => setShowAddModal(true)}
                   className="px-3 py-2 bg-blue-700 text-white text-xs font-black rounded-xl hover:bg-blue-800 flex items-center justify-center gap-1.5 shadow transition-all cursor-pointer"
@@ -368,8 +404,8 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                   <PlusSquare className="h-4 w-4" />
                   إدخال حجز لمريض جديد 🧑‍⚕️
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Table Filters Panel */}

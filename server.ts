@@ -83,13 +83,20 @@ async function loadDbFromSupabase(): Promise<DbState | null> {
   return null;
 }
 
+let currentSavePromise: Promise<void> = Promise.resolve();
+let queuedDbState: DbState | null = null;
+
 // Function to save db state backup directly to Supabase table
-async function saveDbToSupabase(db: DbState) {
+async function saveDbToSupabase(db: DbState): Promise<void> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
   if (!supabaseUrl || !supabaseKey) return;
 
-  if (isSavingToSupabase) return;
+  if (isSavingToSupabase) {
+    // Queue the latest db state to be saved next
+    queuedDbState = db;
+    return;
+  }
   isSavingToSupabase = true;
 
   try {
@@ -116,6 +123,12 @@ async function saveDbToSupabase(db: DbState) {
     console.warn('[SupabaseStorage] Exception encountered while saving DB to Supabase:', err);
   } finally {
     isSavingToSupabase = false;
+    // If a new state was queued while saving, save it now!
+    if (queuedDbState) {
+      const nextDbState = queuedDbState;
+      queuedDbState = null;
+      await saveDbToSupabase(nextDbState);
+    }
   }
 }
 
@@ -308,10 +321,14 @@ function writeDb(db: DbState) {
     console.warn('Fs write db state skipped:', err.message);
   }
 
-  // Trigger outbound backup sync to Supabase database container
-  saveDbToSupabase(db).catch(err => {
-    console.warn('[SupabaseStorage] Async state backup failed:', err);
-  });
+  // Trigger outbound backup sync and chain the promise so we can wait for completion before completing the HTTP request
+  currentSavePromise = (async () => {
+    try {
+      await saveDbToSupabase(db);
+    } catch (err) {
+      console.warn('[SupabaseStorage] Async state backup failed inside chain:', err);
+    }
+  })();
 }
 
 // -------------------------------------------------------------------------
@@ -331,6 +348,29 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
+  next();
+});
+
+// Middleware to guarantee that any asynchronous database syncs (such as saving state to Supabase) 
+// are fully completed before the Express server responds to the client, preventing Vercel thread suspensions
+app.use((req, res, next) => {
+  const originalJson = res.json;
+  const originalSend = res.send;
+
+  res.json = function (this: any, body: any) {
+    currentSavePromise.finally(() => {
+      originalJson.call(this, body);
+    });
+    return this;
+  } as any;
+
+  res.send = function (this: any, body: any) {
+    currentSavePromise.finally(() => {
+      originalSend.call(this, body);
+    });
+    return this;
+  } as any;
+
   next();
 });
 
@@ -1066,7 +1106,7 @@ app.get('/api/webhook/whatsapp', (req, res) => {
 /**
  * Webhook POST handler for incoming messaging payloads
  */
-app.post('/api/webhook/whatsapp', webhookRateLimit, (req, res) => {
+app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
   const db = readDb();
   const signature = req.headers['x-hub-signature-256'] as string;
   const appSecret = db.whatsapp_settings.app_secret || process.env.META_APP_SECRET;
@@ -1102,7 +1142,7 @@ app.post('/api/webhook/whatsapp', webhookRateLimit, (req, res) => {
 
     if (isWebhookActive && accessToken && phoneNumberId) {
       console.log(`[WhatsApp Webhook] Dispatching active API call for [+${fromPhone}] via Graph API...`);
-      sendWhatsAppMessage(fromPhone, botResponse, {
+      await sendWhatsAppMessage(fromPhone, botResponse, {
         access_token: accessToken,
         phone_number_id: phoneNumberId
       });
