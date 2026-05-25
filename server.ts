@@ -83,8 +83,8 @@ async function loadDbFromSupabase(): Promise<DbState | null> {
   return null;
 }
 
+let dbSaveQueue: Promise<void> = Promise.resolve();
 let currentSavePromise: Promise<void> = Promise.resolve();
-let queuedDbState: DbState | null = null;
 
 // Function to save db state backup directly to Supabase table
 async function saveDbToSupabase(db: DbState): Promise<void> {
@@ -92,44 +92,36 @@ async function saveDbToSupabase(db: DbState): Promise<void> {
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
   if (!supabaseUrl || !supabaseKey) return;
 
-  if (isSavingToSupabase) {
-    // Queue the latest db state to be saved next
-    queuedDbState = db;
-    return;
-  }
-  isSavingToSupabase = true;
+  // Append this write to the global sequential queue
+  dbSaveQueue = dbSaveQueue.then(async () => {
+    try {
+      const supabase = getSupabase();
+      // Always use the latest in-memory copy if it exists, to prevent older states overriding new ones
+      const latestDb = memoryDb || db;
+      const serialized = JSON.stringify(latestDb);
 
-  try {
-    const supabase = getSupabase();
-    const serialized = JSON.stringify(db);
+      const { error } = await supabase
+        .from('bot_sessions')
+        .upsert({
+          phone: 'STORED_DB_STATE',
+          patient_name: serialized,
+          current_state: 'SYSTEM',
+          last_interaction_at: getYemenTime().toISOString()
+        }, {
+          onConflict: 'phone'
+        });
 
-    const { error } = await supabase
-      .from('bot_sessions')
-      .upsert({
-        phone: 'STORED_DB_STATE',
-        patient_name: serialized,
-        current_state: 'SYSTEM',
-        last_interaction_at: getYemenTime().toISOString()
-      }, {
-        onConflict: 'phone'
-      });
-
-    if (error) {
-      console.warn('[SupabaseStorage] Error backing up state to Supabase:', error.message);
-    } else {
-      console.log('[SupabaseStorage] Successfully backed up database state to Supabase.');
+      if (error) {
+        console.warn('[SupabaseStorage] Error backing up state to Supabase:', error.message);
+      } else {
+        console.log('[SupabaseStorage] Successfully backed up database state to Supabase.');
+      }
+    } catch (err: any) {
+      console.warn('[SupabaseStorage] Exception encountered while saving DB to Supabase:', err);
     }
-  } catch (err) {
-    console.warn('[SupabaseStorage] Exception encountered while saving DB to Supabase:', err);
-  } finally {
-    isSavingToSupabase = false;
-    // If a new state was queued while saving, save it now!
-    if (queuedDbState) {
-      const nextDbState = queuedDbState;
-      queuedDbState = null;
-      await saveDbToSupabase(nextDbState);
-    }
-  }
+  });
+
+  return dbSaveQueue;
 }
 
 // Ensure data directory exists if not on Vercel

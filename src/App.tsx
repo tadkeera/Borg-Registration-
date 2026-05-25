@@ -334,7 +334,7 @@ export default function App() {
                   : 'text-slate-500 hover:text-slate-705'
               }`}
             >
-              🩺 لوحة العيادات الكبرى
+              🩺 أطباء المستشفى
             </button>
 
             <button
