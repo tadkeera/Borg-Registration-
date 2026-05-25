@@ -178,7 +178,13 @@ function mergeArrays<T extends { id: string }>(
     if (remoteItem) {
       resultMap.set(id, { ...remoteItem, ...localItem });
     } else {
-      resultMap.set(id, localItem);
+      if (loadedIds.has(id)) {
+        // We loaded it previously, but now it's gone from remote (deleted on another instance).
+        // Respect the remote deletion; do not keep or restore.
+      } else {
+        // Brand new local insert, keep it.
+        resultMap.set(id, localItem);
+      }
     }
   }
 
