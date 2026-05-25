@@ -39,333 +39,12 @@ const PORT = 3000;
 
 // Force a robust, crash-safe local file setup that handles serverless deployment (like Vercel) gracefully
 const isVercel = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_VERSION;
-let memoryDb: DbState | null = null;
-let isSavingToSupabase = false;
 
-const DB_FILE = isVercel
-  ? path.join('/tmp', 'db.json')
-  : path.join(process.cwd(), 'data', 'db.json');
 
 // Full-proof utility to ensure DB state has all required keys & default users
-function ensureDbDefaults(db: any): DbState {
-  if (!db || typeof db !== 'object') {
-    db = {};
-  }
-  if (!db.doctors) db.doctors = [];
-  if (!db.schedules) db.schedules = [];
-  if (!db.bookings) db.bookings = [];
-  if (!db.bot_sessions) db.bot_sessions = {};
-  if (!db.whatsapp_logs) db.whatsapp_logs = [];
-  
-  if (!db.whatsapp_settings) {
-    db.whatsapp_settings = {
-      id: 1,
-      webhook_verify_token: 'doctors_tower_verify_token_123',
-      access_token: '',
-      app_secret: '',
-      phone_number_id: '',
-      is_active: true
-    };
-  }
-  
-  if (!db.system_settings) {
-    db.system_settings = {
-      id: 1,
-      receptionist_name_required: false,
-      admin_password: '123'
-    };
-  }
 
-  const defaultUsers = [
-    { id: 'u-tadkeera', username: 'tadkeera@gmail.com', password: 'WALEED770@', role: 'admin', employee_name: 'مدير تذكرة (Tadkeera Admin)' },
-    { id: 'u-1', username: 'admin', password: '123', role: 'admin', employee_name: 'مدير النظام الرئيسي' },
-    { id: 'u-2', username: 'receptionist', password: 'receptionist', role: 'receptionist', employee_name: 'موظف الاستقبال الافتراضي' }
-  ];
 
-  if (!db.users || !Array.isArray(db.users)) {
-    db.users = defaultUsers;
-  } else {
-    // Add missing default users
-    defaultUsers.forEach(defUser => {
-      const exists = db.users.some((u: any) => u.username.trim().toLowerCase() === defUser.username.toLowerCase());
-      if (!exists) {
-        db.users.push(defUser);
-      }
-    });
 
-    db.users = db.users.map((u: any) => {
-      if (!u.employee_name) {
-        u.employee_name = u.role === 'admin' 
-          ? (u.username === 'tadkeera@gmail.com' ? 'مدير تذكرة (Tadkeera Admin)' : 'مدير النظام الرئيسي') 
-          : 'موظف الاستقبال الافتراضي';
-      }
-      return u;
-    });
-  }
-
-  return db as DbState;
-}
-
-// Function to load db state from Supabase dynamically on startup
-async function loadDbFromSupabase(): Promise<DbState | null> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !supabaseKey) {
-    console.log('[SupabaseStorage] Supabase is not configured yet. Using local filesystem DB.');
-    return null;
-  }
-
-  try {
-    const supabase = getSupabase();
-    console.log('[SupabaseStorage] Loading persistent DB state from Supabase bot_sessions table...');
-    const { data, error } = await supabase
-      .from('bot_sessions')
-      .select('patient_name')
-      .eq('phone', 'STORED_DB_STATE')
-      .maybeSingle();
-
-    if (error) {
-      console.warn('[SupabaseStorage] Failed to query Supabase state (likely table bot_sessions does not exist yet):', error.message);
-      return null;
-    }
-
-    if (data && data.patient_name) {
-      const parsed = JSON.parse(data.patient_name);
-      if (parsed && typeof parsed === 'object') {
-        console.log('[SupabaseStorage] Successfully loaded persistent DB state from Supabase.');
-        return ensureDbDefaults(parsed);
-      }
-    }
-    console.log('[SupabaseStorage] No persistent DB state found in Supabase (starting fresh).');
-  } catch (err) {
-    console.warn('[SupabaseStorage] Exception encountered while restoring DB from Supabase:', err);
-  }
-  return null;
-}
-
-let dbSaveQueue: Promise<void> = Promise.resolve();
-let currentSavePromise: Promise<void> = Promise.resolve();
-
-let isDbHydrated = false;
-
-// Conflict Resolution State Tracking (Prevents Zombie / Deleted items from resurrecting in distributed Vercel lambdas)
-let loadedDoctorIds = new Set<string>();
-let loadedScheduleIds = new Set<string>();
-let loadedBookingIds = new Set<string>();
-let loadedUserIds = new Set<string>();
-
-function trackLoadedIds(db: DbState) {
-  if (!db) return;
-  loadedDoctorIds = new Set((db.doctors || []).map(d => d.id));
-  loadedScheduleIds = new Set((db.schedules || []).map(s => s.id));
-  loadedBookingIds = new Set((db.bookings || []).map(b => b.id));
-  loadedUserIds = new Set((db.users || []).map(u => u.id));
-}
-
-// Distributed replication merge helper
-function mergeArrays<T extends { id: string }>(
-  local: T[],
-  remote: T[],
-  loadedIds: Set<string>
-): T[] {
-  const localMap = new Map((local || []).map(item => [item.id, item]));
-  const remoteMap = new Map((remote || []).map(item => [item.id, item]));
-  const resultMap = new Map<string, T>();
-
-  // 1. Keep all items in local (updates, reads, or inserts of this node)
-  for (const [id, localItem] of localMap.entries()) {
-    const remoteItem = remoteMap.get(id);
-    if (remoteItem) {
-      resultMap.set(id, { ...remoteItem, ...localItem });
-    } else {
-      if (loadedIds.has(id)) {
-        // We loaded it previously, but now it's gone from remote (deleted on another instance).
-        // Respect the remote deletion; do not keep or restore.
-      } else {
-        // Brand new local insert, keep it.
-        resultMap.set(id, localItem);
-      }
-    }
-  }
-
-  // 2. Resolve items in remote that do not exist locally
-  for (const [id, remoteItem] of remoteMap.entries()) {
-    if (!resultMap.has(id)) {
-      if (loadedIds.has(id)) {
-        // We loaded it previously, but now it's gone locally. This means the local node explicitly deleted it!
-        // Respect the deletion; do not restore.
-      } else {
-        // Brand new item added on another instance! Synchronize and keep it.
-        resultMap.set(id, remoteItem);
-      }
-    }
-  }
-
-  return Array.from(resultMap.values());
-}
-
-function mergeBotSessions(
-  local: Record<string, BotSession>,
-  remote: Record<string, BotSession>
-): Record<string, BotSession> {
-  const merged: Record<string, BotSession> = { ...(remote || {}) };
-
-  for (const [phone, localSession] of Object.entries(local || {})) {
-    const remoteSession = remote ? remote[phone] : null;
-    if (remoteSession) {
-      const localTime = new Date(localSession.last_interaction_at || 0).getTime();
-      const remoteTime = new Date(remoteSession.last_interaction_at || 0).getTime();
-      if (localTime >= remoteTime) {
-        merged[phone] = localSession;
-      } else {
-        merged[phone] = remoteSession;
-      }
-    } else {
-      merged[phone] = localSession;
-    }
-  }
-
-  return merged;
-}
-
-function mergeLogs(local: WhatsAppLog[], remote: WhatsAppLog[]): WhatsAppLog[] {
-  const logMap = new Map<string, WhatsAppLog>();
-  (remote || []).forEach(log => {
-    if (log.id) logMap.set(log.id, log);
-  });
-  (local || []).forEach(log => {
-    if (log.id) logMap.set(log.id, log);
-  });
-  return Array.from(logMap.values()).sort(
-    (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
-  );
-}
-
-// Low-latency Atomic Sync and merge logic
-async function syncDatabase(localChanges?: (db: DbState) => void): Promise<DbState> {
-  return new Promise((resolve, reject) => {
-    dbSaveQueue = dbSaveQueue.then(async () => {
-      try {
-        console.log('[DatabaseSync] Triggering real-time state synchronization cycle with Supabase remote...');
-        const remote = await loadDbFromSupabase();
-        
-        let currentLocal = memoryDb;
-        if (!currentLocal) {
-          if (fs.existsSync(DB_FILE)) {
-            try {
-              const data = fs.readFileSync(DB_FILE, 'utf-8');
-              currentLocal = ensureDbDefaults(JSON.parse(data));
-            } catch (e) {
-              currentLocal = ensureDbDefaults(null);
-            }
-          } else {
-            currentLocal = ensureDbDefaults(null);
-          }
-        }
-
-        if (localChanges) {
-          localChanges(currentLocal);
-        }
-
-        let merged = currentLocal;
-        if (remote) {
-          merged = {
-            doctors: mergeArrays(currentLocal.doctors || [], remote.doctors || [], loadedDoctorIds),
-            schedules: mergeArrays(currentLocal.schedules || [], remote.schedules || [], loadedScheduleIds),
-            bookings: mergeArrays(currentLocal.bookings || [], remote.bookings || [], loadedBookingIds),
-            users: mergeArrays(currentLocal.users || [], remote.users || [], loadedUserIds),
-            bot_sessions: mergeBotSessions(currentLocal.bot_sessions || {}, remote.bot_sessions || {}),
-            whatsapp_logs: mergeLogs(currentLocal.whatsapp_logs || [], remote.whatsapp_logs || []),
-            whatsapp_settings: {
-              id: 1,
-              webhook_verify_token: 'doctors_tower_verify_token_123',
-              access_token: '',
-              app_secret: '',
-              phone_number_id: '',
-              is_active: true,
-              ...(remote.whatsapp_settings || {}),
-              ...(currentLocal.whatsapp_settings || {})
-            } as WhatsAppSettings,
-            system_settings: {
-              id: 1,
-              receptionist_name_required: false,
-              admin_password: '123',
-              ...(remote.system_settings || {}),
-              ...(currentLocal.system_settings || {})
-            } as SystemSettings,
-          };
-          merged = ensureDbDefaults(merged);
-        }
-
-        memoryDb = merged;
-        trackLoadedIds(merged);
-        isDbHydrated = true;
-
-        // Perform async backup of filesystem
-        try {
-          if (!isVercel) {
-            fs.writeFileSync(DB_FILE, JSON.stringify(merged, null, 2), 'utf-8');
-          }
-        } catch (e) {
-          // Ignore
-        }
-
-        // Upload to Supabase atomically
-        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-        if (supabaseUrl && supabaseKey) {
-          const supabase = getSupabase();
-          const serialized = JSON.stringify(merged);
-          const { error } = await supabase
-            .from('bot_sessions')
-            .upsert({
-              phone: 'STORED_DB_STATE',
-              patient_name: serialized,
-              current_state: 'SYSTEM',
-              last_interaction_at: getYemenTime().toISOString()
-            }, {
-              onConflict: 'phone'
-            });
-
-          if (error) {
-            console.warn('[DatabaseSync] Remote upload warning:', error.message);
-          } else {
-            console.log('[DatabaseSync] Atomic database merge and sync with Supabase completed successfully!');
-          }
-        }
-        resolve(merged);
-      } catch (err) {
-        console.error('[DatabaseSync] Sync execution failed:', err);
-        reject(err);
-      }
-    });
-  });
-}
-
-let lastSyncTime = 0;
-const SYNC_COOLDOWN_MS = 3000; // 3 seconds cooldown to reconcile state across multiple servers
-
-function ensureDbHydrated(): Promise<void> {
-  const now = Date.now();
-  if (isDbHydrated && memoryDb && (now - lastSyncTime < SYNC_COOLDOWN_MS)) {
-    return Promise.resolve();
-  }
-  return syncDatabase().then(() => {
-    lastSyncTime = Date.now();
-  });
-}
-
-// Ensure data directory exists if not on Vercel
-if (!isVercel) {
-  try {
-    const dataDir = path.dirname(DB_FILE);
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-  } catch (err) {
-    console.warn('[Storage] Could not create directory for database:', err);
-  }
-}
 
 // -------------------------------------------------------------------------
 // TIMEZONE & DATE UTILITIES (YEMEN UTC+3)
@@ -410,132 +89,6 @@ function getTargetDate(targetDayOfWeekIndex: number): string {
 }
 
 // -------------------------------------------------------------------------
-// DATABASE STORAGE ENGINE & SEEDING
-// -------------------------------------------------------------------------
-const defaultDb: DbState = {
-  doctors: [],
-  schedules: [],
-  bookings: [],
-  whatsapp_settings: {
-    id: 1,
-    webhook_verify_token: 'doctors_tower_verify_token_123',
-    access_token: '',
-    app_secret: '',
-    phone_number_id: '',
-    is_active: true
-  },
-  system_settings: {
-    id: 1,
-    receptionist_name_required: false,
-    admin_password: '123'
-  },
-  bot_sessions: {},
-  whatsapp_logs: [],
-  users: [
-    { id: 'u-tadkeera', username: 'tadkeera@gmail.com', password: 'WALEED770@', role: 'admin', employee_name: 'مدير تذكرة (Tadkeera Admin)' },
-    { id: 'u-1', username: 'admin', password: '123', role: 'admin', employee_name: 'مدير النظام الرئيسي' },
-    { id: 'u-2', username: 'receptionist', password: 'receptionist', role: 'receptionist', employee_name: 'موظف الاستقبال الافتراضي' }
-  ]
-};
-
-// Initialize and Seed JSON Database file safely without blocking or triggering EROFS on Vercel
-try {
-  if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(defaultDb, null, 2), 'utf-8');
-    console.log(`[Database] Initialized new database file successfully at ${DB_FILE}`);
-  } else {
-    console.log(`[Database] Loaded existing database file from ${DB_FILE}`);
-  }
-} catch (err) {
-  console.warn('[Database] Failed to write database file. Falling back to in-memory db:', err);
-  memoryDb = JSON.parse(JSON.stringify(defaultDb));
-}
-
-// Helper to auto sync configuration user with Supabase Auth if credentials exist
-async function syncAdminUserToSupabase(email: string, pass: string) {
-  try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-    if (!supabaseUrl || !supabaseKey) return; // Supabase not configured yet
-    const supabase = getSupabase();
-    
-    // Check if user has auth module available or write a user to Auth
-    // Since service role key can create users directly, we can try using admin API:
-    if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      const { data: listData, error: listError } = await supabase.auth.admin.listUsers();
-      if (!listError && listData && listData.users) {
-        const userExists = listData.users.some((u: any) => u.email === email);
-        if (!userExists) {
-          console.log(`[SupabaseSync] Creating admin user ${email} in Supabase Auth via admin API...`);
-          await supabase.auth.admin.createUser({
-            email,
-            password: pass,
-            email_confirm: true,
-            user_metadata: { role: 'admin', name: 'مدير تذكرة (Tadkeera Admin)' }
-          });
-        }
-      }
-    } else {
-      // Direct signup fallback for Anon Key
-      console.log(`[SupabaseSync] Attempting regular signup fallback for ${email}...`);
-      await supabase.auth.signUp({
-        email,
-        password: pass,
-        options: {
-          data: { role: 'admin', name: 'مدير تذكرة (Tadkeera Admin)' }
-        }
-      });
-    }
-  } catch (err) {
-    console.warn('[SupabaseSync] Skipping automated Supabase Auth sync (expected if DB schema differs or credentials lack privileges):', err);
-  }
-}
-
-// Run initial Sync in background
-syncAdminUserToSupabase('tadkeera@gmail.com', 'WALEED770@').catch(() => {});
-
-function readDb(): DbState {
-  if (memoryDb) {
-    return memoryDb;
-  }
-  try {
-    if (!fs.existsSync(DB_FILE)) {
-      memoryDb = ensureDbDefaults(null);
-      return memoryDb;
-    }
-    const data = fs.readFileSync(DB_FILE, 'utf-8');
-    const db = JSON.parse(data);
-    memoryDb = ensureDbDefaults(db);
-    return memoryDb;
-  } catch (err) {
-    console.error('Error reading database file, returning default schema:', err);
-    memoryDb = ensureDbDefaults(null);
-    return memoryDb;
-  }
-}
-
-function writeDb(db: DbState) {
-  // Always update our local memoryDb copy first
-  memoryDb = db;
-
-  // Attempt local disk file sync (skipped gracefully on read-only serverless runtimes)
-  try {
-    if (!isVercel) {
-      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
-    }
-  } catch (err) {
-    console.warn('Fs write db state skipped:', err.message);
-  }
-
-  // Trigger atomic distribution lock sync cycle
-  currentSavePromise = syncDatabase().then(() => {
-    console.log('[writeDb] Real-time state replication cycle finalized.');
-  }).catch(err => {
-    console.error('[writeDb] Real-time state replication failed:', err);
-  });
-}
-
-// -------------------------------------------------------------------------
 // SERVER MIDDLEWARE SETUP
 // -------------------------------------------------------------------------
 app.use(express.json({
@@ -552,39 +105,6 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
-  next();
-});
-
-// Middleware to ensure Database is fully hydrated and loaded from Supabase before executing any route code
-app.use(async (req, res, next) => {
-  try {
-    await ensureDbHydrated();
-  } catch (err) {
-    console.error('[Middleware] Error ensuring database hydration:', err);
-  }
-  next();
-});
-
-// Middleware to guarantee that any asynchronous database syncs (such as saving state to Supabase) 
-// are fully completed before the Express server responds to the client, preventing Vercel thread suspensions
-app.use((req, res, next) => {
-  const originalJson = res.json;
-  const originalSend = res.send;
-
-  res.json = function (this: any, body: any) {
-    currentSavePromise.finally(() => {
-      originalJson.call(this, body);
-    });
-    return this;
-  } as any;
-
-  res.send = function (this: any, body: any) {
-    currentSavePromise.finally(() => {
-      originalSend.call(this, body);
-    });
-    return this;
-  } as any;
-
   next();
 });
 
@@ -679,501 +199,661 @@ app.post('/api/auth/login', async (req, res) => {
   const cleanUser = username.trim().toLowerCase();
   const cleanPass = password.trim();
 
-  // Load local database first to determine if credentials are valid locally
-  const db = readDb();
-  const users = db.users || [];
-
-  const foundUser = users.find(
-    u => u.username.trim().toLowerCase() === cleanUser && u.password.trim() === cleanPass
-  );
-
-  const isHardcodedAdmin = (cleanUser === 'tadkeera@gmail.com' && cleanPass === 'WALEED770@');
-  const isLocallyValid = !!foundUser || isHardcodedAdmin;
-
-  // Try Supabase Auth code if configured
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-  if (supabaseUrl && supabaseKey) {
-    try {
-      const supabase = getSupabase();
-      console.log(`[Auth] Attempting Supabase Auth sign-in for ${cleanUser}...`);
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: cleanUser,
-        password: cleanPass
-      });
-      if (!error && data?.user) {
-        console.log(`[Auth] Supabase login successful for ${cleanUser}!`);
-        // If it's tadkeera or user_metadata says admin, make them admin
-        const role = data.user.user_metadata?.role || (cleanUser === 'tadkeera@gmail.com' || cleanUser.includes('admin') ? 'admin' : 'receptionist');
-        const empName = data.user.user_metadata?.name || (cleanUser === 'tadkeera@gmail.com' ? 'مدير تذكرة (Tadkeera Admin)' : username);
-        return res.json({
-          success: true,
-          role: role,
-          token: `${role}-${data.user.id}`,
-          receptionistName: empName
-        });
-      } else {
-        // If the credentials are valid locally (like the default or hardcoded admin),
-        // we can auto-register them in Supabase Auth to seed the user.
-        if (isLocallyValid) {
-          console.log(`[Auth] Credentials valid locally but missing or unverified in Supabase. Auto-syncing user ${cleanUser} to Supabase Auth...`);
-          try {
-            const signupRole = cleanUser === 'tadkeera@gmail.com' || cleanUser.includes('admin') ? 'admin' : 'receptionist';
-            const signupName = cleanUser === 'tadkeera@gmail.com' ? 'مدير تذكرة (Tadkeera Admin)' : (foundUser?.employee_name || username);
-
-            // Attempt dynamic signup to seed Supabase Auth database
-            const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-              email: cleanUser,
-              password: cleanPass,
-              options: {
-                data: { role: signupRole, name: signupName }
-              }
-            });
-
-            if (!signUpError && signUpData?.user) {
-              console.log(`[Auth] Successfully registered and synced user ${cleanUser} in Supabase Auth!`);
-              return res.json({
-                success: true,
-                role: signupRole,
-                token: `${signupRole}-${signUpData.user.id}`,
-                receptionistName: signupName
-              });
-            } else {
-              const reason = signUpError ? signUpError.message : 'waiting for confirmation';
-              console.log(`[Auth] Supabase auto-signup logged (${reason}). Proceeding with safe local fallback login.`);
-            }
-          } catch (signUpFail) {
-            console.log('[Auth] Supabase signup helper bypassed. Proceeding with local fallback login.');
-          }
-        } else {
-          if (error) {
-            // Only log standard login failure warning if credentials do NOT match our database
-            console.log(`[Auth] Invalid credentials login attempt for ${cleanUser}: ${error.message}`);
-          }
-        }
-      }
-    } catch (err) {
-      console.log('[Auth] Supabase Auth check bypassed. Proceeding with local fallback login:', err);
-    }
-  }
-
-  // Final Backup Local Database / Hardcoded fallback resolution
-  if (isLocallyValid) {
-    const role = (cleanUser === 'tadkeera@gmail.com' || (foundUser && foundUser.role === 'admin')) ? 'admin' : 'receptionist';
-    const empName = cleanUser === 'tadkeera@gmail.com' ? 'مدير تذكرة (Tadkeera Admin)' : (foundUser?.employee_name || foundUser?.username || username);
-    const userId = foundUser?.id || 'u-tadkeera';
-
-    return res.json({
-      success: true,
-      role: role,
-      token: `${role}-${userId}`,
-      receptionistName: empName
+  try {
+    const supabase = getSupabase();
+    
+    // 1. Try Supabase Auth first
+    const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+      email: cleanUser,
+      password: cleanPass
     });
-  }
 
-  return res.status(401).json({ success: false, error: 'اسم المستخدم أو كلمة المرور غير صحيحة.' });
+    if (!authErr && authData?.user) {
+      const role = authData.user.user_metadata?.role || (cleanUser === 'tadkeera@gmail.com' || cleanUser.includes('admin') ? 'admin' : 'receptionist');
+      const empName = authData.user.user_metadata?.name || (cleanUser === 'tadkeera@gmail.com' ? 'مدير تذكرة (Tadkeera Admin)' : username);
+      return res.json({
+        success: true,
+        role: role,
+        token: authData.session?.access_token || `${role}-${authData.user.id}`,
+        receptionistName: empName
+      });
+    }
+
+    // 2. Try the custom users database table
+    const { data: dbUser } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', cleanUser)
+      .eq('password', cleanPass)
+      .maybeSingle();
+
+    if (dbUser) {
+      return res.json({
+        success: true,
+        role: dbUser.role,
+        token: `${dbUser.role}-${dbUser.id}`,
+        receptionistName: dbUser.employee_name || dbUser.username
+      });
+    }
+
+    // 3. Simple hardcoded fallback for brand new systems before database tables are seeded
+    const isHardcodedAdmin = (cleanUser === 'tadkeera@gmail.com' && cleanPass === 'WALEED770@');
+    if (isHardcodedAdmin) {
+      return res.json({
+        success: true,
+        role: 'admin',
+        token: 'admin-tadkeera',
+        receptionistName: 'مدير تذكرة (Tadkeera Admin)'
+      });
+    }
+
+    return res.status(401).json({ success: false, error: 'اسم المستخدم أو كلمة المرور غير صحيحة.' });
+  } catch (err: any) {
+    console.error('[Auth Error]', err.message);
+    return res.status(500).json({ success: false, error: 'حدث خطأ أثناء المصادقة' });
+  }
 });
 
 // Dynamic User Management API
-app.get('/api/users', (req, res) => {
-  const db = readDb();
-  const usersList = (db.users || []).map(u => ({
-    id: u.id,
-    username: u.username,
-    role: u.role,
-    employee_name: u.employee_name || u.username,
-    created_at: u.created_at
-  }));
-  res.json(usersList);
+app.get('/api/users', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      // Return hardcoded placeholders if custom users table does not exist yet to keep UI from crashing
+      return res.json([
+        { id: 'u-tadkeera', username: 'tadkeera@gmail.com', role: 'admin', employee_name: 'مدير تذكرة (Tadkeera Admin)' },
+        { id: 'u-1', username: 'admin', role: 'admin', employee_name: 'مدير النظام الرئيسي' },
+        { id: 'u-2', username: 'receptionist', role: 'receptionist', employee_name: 'موظف الاستقبال الافتراضي' }
+      ]);
+    }
+
+    res.json((data || []).map(u => ({
+      id: u.id,
+      username: u.username,
+      role: u.role,
+      employee_name: u.employee_name || u.username,
+      created_at: u.created_at
+    })));
+  } catch (err: any) {
+    console.error('Fetch users error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
 });
 
-app.post('/api/users', (req, res) => {
+app.post('/api/users', async (req, res) => {
   const { username, password, role, employee_name } = req.body;
   if (!username || !password || !role) {
     return res.status(400).json({ error: 'الرجاء إدخال اسم المستخدم وكلمة المرور واختيار الصلاحية' });
   }
 
-  const db = readDb();
-  if (!db.users) db.users = [];
+  try {
+    const supabase = getSupabase();
+    const { data: exists } = await supabase
+      .from('users')
+      .select('id')
+      .eq('username', username.trim().toLowerCase())
+      .maybeSingle();
 
-  const exists = db.users.some(u => u.username.trim().toLowerCase() === username.trim().toLowerCase());
-  if (exists) {
-    return res.status(400).json({ error: 'اسم المستخدم هذا مسجل مسبقاً.' });
+    if (exists) {
+      return res.status(400).json({ error: 'اسم المستخدم هذا مسجل مسبقاً.' });
+    }
+
+    const newUser = {
+      username: username.trim(),
+      password: password.trim(),
+      role: role,
+      employee_name: employee_name ? employee_name.trim() : (role === 'admin' ? 'مدير نظام جديد' : 'موظف استقبال جديد')
+    };
+
+    const { data, error } = await supabase
+      .from('users')
+      .insert([newUser])
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err: any) {
+    console.error('Create user error:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to create user' });
   }
-
-  const newUser = {
-    id: `user-${Date.now()}`,
-    username: username.trim(),
-    password: password.trim(),
-    role: role,
-    employee_name: employee_name ? employee_name.trim() : (role === 'admin' ? 'مدير نظام جديد' : 'موظف استقبال جديد'),
-    created_at: new Date().toISOString()
-  };
-
-  db.users.push(newUser);
-  writeDb(db);
-
-  res.status(201).json({ id: newUser.id, username: newUser.username, role: newUser.role, employee_name: newUser.employee_name });
 });
 
-app.delete('/api/users/:id', (req, res) => {
+app.delete('/api/users/:id', async (req, res) => {
   const { id } = req.params;
-  const db = readDb();
-  if (!db.users) db.users = [];
+  try {
+    const supabase = getSupabase();
+    const { data: userToDelete, error: fetchErr } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
 
-  const userToDelete = db.users.find(u => u.id === id);
-  if (!userToDelete) {
-    return res.status(404).json({ error: 'المستخدم غير موجود' });
+    if (fetchErr || !userToDelete) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
+
+    const { data: admins } = await supabase
+      .from('users')
+      .select('id')
+      .eq('role', 'admin');
+
+    if (userToDelete.role === 'admin' && (admins || []).length <= 1) {
+      return res.status(400).json({ error: 'لا يمكن حذف آخر مدير نظام للوحة التحكم لتفادي غلق الحساب.' });
+    }
+
+    const { error } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Delete user error:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to delete user' });
   }
-
-  const admins = db.users.filter(u => u.role === 'admin');
-  if (userToDelete.role === 'admin' && admins.length <= 1) {
-    return res.status(400).json({ error: 'لا يمكن حذف آخر مدير نظام للوحة التحكم لتفادي غلق الحساب.' });
-  }
-
-  db.users = db.users.filter(u => u.id !== id);
-  writeDb(db);
-  res.json({ success: true });
 });
 
 // 2. DOCTORS ENDPOINTS (CRUD)
-app.get('/api/doctors', (req, res) => {
-  const db = readDb();
-  res.json(db.doctors);
+app.get('/api/doctors', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('doctors')
+      .select('*')
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err: any) {
+    console.error('Fetch doctors error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch doctors' });
+  }
 });
 
-app.post('/api/doctors', (req, res) => {
+app.post('/api/doctors', async (req, res) => {
   const { name, specialty, is_active, allow_second_week_booking, limit_two_patients_per_number } = req.body;
-  const db = readDb();
-  const newDoc: Doctor = {
-    id: `doc-${Date.now()}`,
-    name,
-    specialty,
-    is_active: is_active !== undefined ? is_active : true,
-    allow_second_week_booking: allow_second_week_booking !== undefined ? !!allow_second_week_booking : false,
-    limit_two_patients_per_number: limit_two_patients_per_number !== undefined ? !!limit_two_patients_per_number : false
-  };
-  db.doctors.push(newDoc);
-  writeDb(db);
-  res.status(201).json(newDoc);
+  if (!name || !specialty) {
+    return res.status(400).json({ error: 'Name and specialty are required' });
+  }
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('doctors')
+      .insert([{
+        name,
+        specialty,
+        is_active: is_active !== undefined ? is_active : true,
+        allow_second_week_booking: allow_second_week_booking !== undefined ? !!allow_second_week_booking : false,
+        limit_two_patients_per_number: limit_two_patients_per_number !== undefined ? !!limit_two_patients_per_number : false
+      }])
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err: any) {
+    console.error('Create doctor error:', err.message);
+    res.status(500).json({ error: 'Failed to create doctor' });
+  }
 });
 
-app.put('/api/doctors/:id', (req, res) => {
+app.put('/api/doctors/:id', async (req, res) => {
   const { id } = req.params;
   const { name, specialty, is_active, allow_second_week_booking, limit_two_patients_per_number } = req.body;
-  const db = readDb();
-  const idx = db.doctors.findIndex(d => d.id === id);
-  if (idx === -1) return res.status(404).json({ error: 'Doctor not found' });
-  
-  db.doctors[idx] = {
-    ...db.doctors[idx],
-    name: name !== undefined ? name : db.doctors[idx].name,
-    specialty: specialty !== undefined ? specialty : db.doctors[idx].specialty,
-    is_active: is_active !== undefined ? is_active : db.doctors[idx].is_active,
-    allow_second_week_booking: allow_second_week_booking !== undefined ? !!allow_second_week_booking : !!db.doctors[idx].allow_second_week_booking,
-    limit_two_patients_per_number: limit_two_patients_per_number !== undefined ? !!limit_two_patients_per_number : !!db.doctors[idx].limit_two_patients_per_number
-  };
-  writeDb(db);
-  res.json(db.doctors[idx]);
+  try {
+    const supabase = getSupabase();
+    const updateData: any = {};
+    if (name !== undefined) updateData.name = name;
+    if (specialty !== undefined) updateData.specialty = specialty;
+    if (is_active !== undefined) updateData.is_active = is_active;
+    if (allow_second_week_booking !== undefined) updateData.allow_second_week_booking = !!allow_second_week_booking;
+    if (limit_two_patients_per_number !== undefined) updateData.limit_two_patients_per_number = !!limit_two_patients_per_number;
+
+    const { data, error } = await supabase
+      .from('doctors')
+      .update(updateData)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err: any) {
+    console.error('Update doctor error:', err.message);
+    res.status(500).json({ error: 'Failed to update doctor' });
+  }
 });
 
-app.delete('/api/doctors/:id', (req, res) => {
+app.delete('/api/doctors/:id', async (req, res) => {
   const { id } = req.params;
-  const db = readDb();
-  db.doctors = db.doctors.filter(d => d.id !== id);
-  db.schedules = db.schedules.filter(s => s.doctor_id !== id);
-  db.bookings = db.bookings.filter(b => b.doctor_id !== id);
-  writeDb(db);
-  res.json({ success: true, message: 'Doctor deleted' });
+  try {
+    const supabase = getSupabase();
+    const { error } = await supabase
+      .from('doctors')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+    res.json({ success: true, message: 'Doctor deleted' });
+  } catch (err: any) {
+    console.error('Delete doctor error:', err.message);
+    res.status(500).json({ error: 'Failed to delete doctor' });
+  }
 });
 
 // 3. SCHEDULES ENDPOINTS (CRUD)
-app.get('/api/schedules', (req, res) => {
-  const db = readDb();
-  const schedulesWithJoins = db.schedules.map(sch => {
-    const doc = db.doctors.find(d => d.id === sch.doctor_id);
-    return {
+app.get('/api/schedules', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('schedules')
+      .select('*, doctor:doctors(name, specialty)')
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    const mapped = (data || []).map(sch => ({
       ...sch,
-      doctor_name: doc ? doc.name : 'طبيب محذوف',
-      doctor_specialty: doc ? doc.specialty : ''
-    };
-  });
-  res.json(schedulesWithJoins);
+      doctor_name: sch.doctor ? sch.doctor.name : 'طبيب محذوف',
+      doctor_specialty: sch.doctor ? sch.doctor.specialty : ''
+    }));
+    res.json(mapped);
+  } catch (err: any) {
+    console.error('Fetch schedules error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch schedules' });
+  }
 });
 
-app.post('/api/schedules', (req, res) => {
+app.post('/api/schedules', async (req, res) => {
   const { doctor_id, day_of_week, max_capacity, start_time: body_start, end_time: body_end, shift } = req.body;
-  const db = readDb();
-  
-  // Valid working days constraint Sat-Thu (0-5)
-  if (day_of_week < 0 || day_of_week > 5) {
-    return res.status(400).json({ error: 'عذراً، الجمعة يوم إجازة رسمي ولا بمكن الإضافة ضمنه.' });
+  try {
+    const supabase = getSupabase();
+    const parsedDay = parseInt(day_of_week);
+    if (parsedDay < 0 || parsedDay > 5) {
+      return res.status(400).json({ error: 'عذراً، الجمعة يوم إجازة رسمي ولا يمكن الإضافة ضمنه.' });
+    }
+
+    const start_time = body_start || (shift === 'evening' ? '15:00' : '09:00');
+    const end_time = body_end || (shift === 'evening' ? '19:00' : '13:00');
+
+    // Check duplicate
+    const { data: existing } = await supabase
+      .from('schedules')
+      .select('id')
+      .eq('doctor_id', doctor_id)
+      .eq('day_of_week', parsedDay)
+      .maybeSingle();
+
+    if (existing) {
+      return res.status(400).json({ error: 'عذراً، هذا الطبيب لديه عيادة مجدولة بالفعل في هذا اليوم.' });
+    }
+
+    const capacity = parseInt(max_capacity) || 15;
+    const { data, error } = await supabase
+      .from('schedules')
+      .insert([{
+        doctor_id,
+        day_of_week: parsedDay,
+        max_capacity: capacity,
+        available_capacity: capacity,
+        start_time,
+        end_time
+      }])
+      .select('*, doctor:doctors(name, specialty)')
+      .single();
+
+    if (error) throw error;
+    res.status(201).json({
+      ...data,
+      doctor_name: data.doctor ? data.doctor.name : '',
+      doctor_specialty: data.doctor ? data.doctor.specialty : ''
+    });
+  } catch (err: any) {
+    console.error('Create schedule error:', err.message);
+    res.status(500).json({ error: 'Failed to create schedule' });
   }
-
-  // Map shift to start and end times
-  const start_time = body_start || (shift === 'evening' ? '15:00' : '09:00');
-  const end_time = body_end || (shift === 'evening' ? '19:00' : '13:00');
-
-  // Check unique constraints: (doctor_id, day_of_week, start_time)
-  const isDuplicate = db.schedules.some(s => 
-    s.doctor_id === doctor_id && 
-    s.day_of_week === parseInt(day_of_week) && 
-    s.start_time === start_time
-  );
-  if (isDuplicate) {
-    return res.status(400).json({ error: 'عذراً، هذا الطبيب لديه عيادة مجدولة بالفعل في نفس هذه الفترة (الصباحية أو المسائية) في هذا اليوم.' });
-  }
-
-  const capacity = parseInt(max_capacity) || 15;
-  const newSch: Schedule = {
-    id: `sch-${Date.now()}`,
-    doctor_id,
-    day_of_week: parseInt(day_of_week),
-    max_capacity: capacity,
-    available_capacity: capacity,
-    start_time,
-    end_time
-  };
-  db.schedules.push(newSch);
-  writeDb(db);
-  
-  const doc = db.doctors.find(d => d.id === doctor_id);
-  res.status(201).json({
-    ...newSch,
-    doctor_name: doc ? doc.name : '',
-    doctor_specialty: doc ? doc.specialty : ''
-  });
 });
 
-app.put('/api/schedules/:id', (req, res) => {
+app.put('/api/schedules/:id', async (req, res) => {
   const { id } = req.params;
   const { max_capacity, start_time, end_time } = req.body;
-  const db = readDb();
-  const idx = db.schedules.findIndex(s => s.id === id);
-  if (idx === -1) return res.status(404).json({ error: 'Schedule not found' });
-  
-  const oldMax = db.schedules[idx].max_capacity;
-  const newMax = max_capacity !== undefined ? parseInt(max_capacity) : oldMax;
-  const capDiff = newMax - oldMax;
-  
-  // Adjust available capacity based on the difference
-  const nextAvailable = Math.max(0, db.schedules[idx].available_capacity + capDiff);
+  try {
+    const supabase = getSupabase();
+    const { data: oldSch, error: getErr } = await supabase
+      .from('schedules')
+      .select('*')
+      .eq('id', id)
+      .single();
 
-  db.schedules[idx] = {
-    ...db.schedules[idx],
-    max_capacity: newMax,
-    available_capacity: nextAvailable,
-    start_time: start_time || db.schedules[idx].start_time,
-    end_time: end_time || db.schedules[idx].end_time
-  };
-  writeDb(db);
-  res.json(db.schedules[idx]);
+    if (getErr || !oldSch) return res.status(404).json({ error: 'Schedule not found' });
+
+    const oldMax = oldSch.max_capacity;
+    const newMax = max_capacity !== undefined ? parseInt(max_capacity) : oldMax;
+    const capDiff = newMax - oldMax;
+    const nextAvailable = Math.max(0, oldSch.available_capacity + capDiff);
+
+    const { data, error } = await supabase
+      .from('schedules')
+      .update({
+        max_capacity: newMax,
+        available_capacity: nextAvailable,
+        start_time: start_time || oldSch.start_time,
+        end_time: end_time || oldSch.end_time
+      })
+      .eq('id', id)
+      .select('*, doctor:doctors(name, specialty)')
+      .single();
+
+    if (error) throw error;
+    res.json({
+      ...data,
+      doctor_name: data.doctor ? data.doctor.name : '',
+      doctor_specialty: data.doctor ? data.doctor.specialty : ''
+    });
+  } catch (err: any) {
+    console.error('Update schedule error:', err.message);
+    res.status(500).json({ error: 'Failed to update schedule' });
+  }
 });
 
-app.delete('/api/schedules/:id', (req, res) => {
+app.delete('/api/schedules/:id', async (req, res) => {
   const { id } = req.params;
-  const db = readDb();
-  db.schedules = db.schedules.filter(s => s.id !== id);
-  db.bookings = db.bookings.filter(b => b.schedule_id !== id);
-  writeDb(db);
-  res.json({ success: true, message: 'Schedule deleted' });
+  try {
+    const supabase = getSupabase();
+    const { error } = await supabase
+      .from('schedules')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+    res.json({ success: true, message: 'Schedule deleted' });
+  } catch (err: any) {
+    console.error('Delete schedule error:', err.message);
+    res.status(500).json({ error: 'Failed to delete schedule' });
+  }
 });
 
 // 4. BOOKINGS ENDPOINTS (CRUD)
-app.get('/api/bookings', (req, res) => {
-  const db = readDb();
-  const bookingsWithJoins = db.bookings.map(b => {
-    const doc = db.doctors.find(d => d.id === b.doctor_id);
-    return {
+app.get('/api/bookings', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('*, doctor:doctors(name, specialty)')
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    const mapped = (data || []).map(b => ({
       ...b,
-      doctor_name: doc ? doc.name : 'طبيب محذوف',
-      doctor_specialty: doc ? doc.specialty : ''
-    };
-  });
-  res.json(bookingsWithJoins);
+      doctor_name: b.doctor ? b.doctor.name : 'طبيب محذوف',
+      doctor_specialty: b.doctor ? b.doctor.specialty : ''
+    }));
+    res.json(mapped);
+  } catch (err: any) {
+    console.error('Fetch bookings error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch bookings' });
+  }
 });
 
-// Add a direct Dashboard manually booked patient
-app.post('/api/bookings', (req, res) => {
+app.post('/api/bookings', async (req, res) => {
   const { doctor_id, schedule_id, patient_name, patient_phone, booking_date } = req.body;
-  const db = readDb();
-  
-  // Find schedule
-  const schIdx = db.schedules.findIndex(s => s.id === schedule_id);
-  if (schIdx === -1) return res.status(404).json({ error: 'Schedule not found' });
-  
-  const sch = db.schedules[schIdx];
-  if (sch.available_capacity <= 0) {
-    return res.status(400).json({ error: 'عذراً لا توجد سعة باقية للحجز في هذا الموعد.' });
+  try {
+    const supabase = getSupabase();
+    
+    // Check duplicates
+    const { data: existingDup } = await supabase
+      .from('bookings')
+      .select('id')
+      .eq('patient_phone', patient_phone)
+      .eq('booking_date', booking_date)
+      .neq('status', 'cancelled')
+      .maybeSingle();
+
+    if (existingDup) {
+      return res.status(400).json({ error: 'عذراً، هذا المريض مسجل بالفعل في حجز نشط آخر لهذا اليوم.' });
+    }
+
+    const { data: sch } = await supabase
+      .from('schedules')
+      .select('available_capacity')
+      .eq('id', schedule_id)
+      .single();
+
+    if (!sch || sch.available_capacity <= 0) {
+      return res.status(400).json({ error: 'عذراً لا توجد سعة باقية للحجز في هذا الموعد.' });
+    }
+
+    const { data, error } = await supabase
+      .from('bookings')
+      .insert([{
+        doctor_id,
+        schedule_id,
+        patient_name,
+        patient_phone,
+        booking_date,
+        queue_number: 0, // Assigned dynamically by DB Trigger
+        status: 'confirmed', 
+        payment_status: 'pending',
+        verified_by_whatsapp: false
+      }])
+      .select('*, doctor:doctors(name, specialty)')
+      .single();
+
+    if (error) {
+      if (error.message?.includes('لا يوجد سعة')) {
+        return res.status(400).json({ error: 'عذراً لا توجد سعة باقية للحجز في هذا الموعد.' });
+      }
+      throw error;
+    }
+
+    res.status(201).json({
+      ...data,
+      doctor_name: data.doctor ? data.doctor.name : '',
+      doctor_specialty: data.doctor ? data.doctor.specialty : ''
+    });
+  } catch (err: any) {
+    console.error('Create booking error:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to create booking' });
   }
-
-  // Calculate sequential queue number for doctor and date
-  const dateBookings = db.bookings.filter(b => b.doctor_id === doctor_id && b.booking_date === booking_date);
-  const nextQueue = dateBookings.length > 0 ? Math.max(...dateBookings.map(b => b.queue_number)) + 1 : 1;
-
-  // Check double/duplicate booking helper constraint
-  const doubleBooked = db.bookings.some(b => b.patient_phone === patient_phone && b.booking_date === booking_date && b.status !== 'cancelled');
-  if (doubleBooked) {
-    return res.status(400).json({ error: 'عذراً، هذا المريض مسجل بالفعل في حجز نشط آخر لهذا اليوم.' });
-  }
-
-  const newBooking: Booking = {
-    id: `book-${Date.now()}`,
-    doctor_id,
-    schedule_id,
-    patient_name,
-    patient_phone,
-    booking_date,
-    queue_number: nextQueue,
-    status: 'confirmed', // Manually added are approved
-    payment_status: 'pending', // Starts pending payment
-    verified_by_whatsapp: false,
-    created_at: getYemenTime().toISOString()
-  };
-
-  db.bookings.push(newBooking);
-  db.schedules[schIdx].available_capacity -= 1;
-  writeDb(db);
-
-  const doc = db.doctors.find(d => d.id === doctor_id);
-  res.status(201).json({
-    ...newBooking,
-    doctor_name: doc ? doc.name : '',
-    doctor_specialty: doc ? doc.specialty : ''
-  });
 });
 
-app.put('/api/bookings/:id', (req, res) => {
+app.put('/api/bookings/:id', async (req, res) => {
   const { id } = req.params;
   const { status, payment_status, patient_name } = req.body;
-  const db = readDb();
-  const idx = db.bookings.findIndex(b => b.id === id);
-  if (idx === -1) return res.status(404).json({ error: 'Booking not found' });
-  
-  const oldBooking = db.bookings[idx];
-  
-  // Manage capacity adjustment logic
-  let capacityAdjust = 0;
-  
-  const wasCancelled = oldBooking.status === 'cancelled' || oldBooking.payment_status === 'cancelled';
-  const isCancelledNow = status === 'cancelled' || payment_status === 'cancelled';
+  try {
+    const supabase = getSupabase();
+    const updateData: any = {};
+    if (status !== undefined) updateData.status = status;
+    if (payment_status !== undefined) updateData.payment_status = payment_status;
+    if (patient_name !== undefined) updateData.patient_name = patient_name;
 
-  if (!wasCancelled && isCancelledNow) {
-    // Increment capacity (freed resource)
-    capacityAdjust = 1;
-  } else if (wasCancelled && !isCancelledNow) {
-    // Decrement capacity
-    capacityAdjust = -1;
+    const { data, error } = await supabase
+      .from('bookings')
+      .update(updateData)
+      .eq('id', id)
+      .select('*, doctor:doctors(name, specialty)')
+      .single();
+
+    if (error) throw error;
+    res.json({
+      ...data,
+      doctor_name: data.doctor ? data.doctor.name : '',
+      doctor_specialty: data.doctor ? data.doctor.specialty : ''
+    });
+  } catch (err: any) {
+    console.error('Update booking error:', err.message);
+    res.status(500).json({ error: 'Failed to update booking' });
   }
-
-  db.bookings[idx] = {
-    ...db.bookings[idx],
-    patient_name: patient_name !== undefined ? patient_name : oldBooking.patient_name,
-    status: status !== undefined ? status : oldBooking.status,
-    payment_status: payment_status !== undefined ? payment_status : oldBooking.payment_status
-  };
-
-  if (capacityAdjust !== 0) {
-    const schIdx = db.schedules.findIndex(s => s.id === oldBooking.schedule_id);
-    if (schIdx !== -1) {
-      db.schedules[schIdx].available_capacity = Math.max(
-        0,
-        Math.min(
-          db.schedules[schIdx].max_capacity,
-          db.schedules[schIdx].available_capacity + capacityAdjust
-        )
-      );
-    }
-  }
-
-  writeDb(db);
-  
-  const doc = db.doctors.find(d => d.id === db.bookings[idx].doctor_id);
-  res.json({
-    ...db.bookings[idx],
-    doctor_name: doc ? doc.name : '',
-    doctor_specialty: doc ? doc.specialty : ''
-  });
 });
 
-app.delete('/api/bookings/:id', (req, res) => {
+app.delete('/api/bookings/:id', async (req, res) => {
   const { id } = req.params;
-  const db = readDb();
-  const booking = db.bookings.find(b => b.id === id);
-  
-  if (booking) {
-    // If deleted booking was active, free capacity
-    const isCancelled = booking.status === 'cancelled' || booking.payment_status === 'cancelled';
-    if (!isCancelled) {
-      const schIdx = db.schedules.findIndex(s => s.id === booking.schedule_id);
-      if (schIdx !== -1) {
-        db.schedules[schIdx].available_capacity = Math.min(
-          db.schedules[schIdx].max_capacity,
-          db.schedules[schIdx].available_capacity + 1
-        );
+  try {
+    const supabase = getSupabase();
+    
+    const { data: booking } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (booking) {
+      const isCancelled = booking.status === 'cancelled' || booking.payment_status === 'cancelled';
+      if (!isCancelled) {
+        const { data: sch } = await supabase
+          .from('schedules')
+          .select('*')
+          .eq('id', booking.schedule_id)
+          .maybeSingle();
+
+        if (sch) {
+          await supabase
+            .from('schedules')
+            .update({ available_capacity: Math.min(sch.max_capacity, sch.available_capacity + 1) })
+            .eq('id', booking.schedule_id);
+        }
       }
+
+      const { error } = await supabase
+        .from('bookings')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
     }
-    db.bookings = db.bookings.filter(b => b.id !== id);
-    writeDb(db);
+
+    res.json({ success: true, message: 'Booking deleted' });
+  } catch (err: any) {
+    console.error('Delete booking error:', err.message);
+    res.status(500).json({ error: 'Failed to delete booking' });
   }
-  
-  res.json({ success: true, message: 'Booking deleted' });
 });
 
 // 5. WHATSAPP SETTINGS ENDPOINTS
-app.get('/api/whatsapp-settings', (req, res) => {
-  const db = readDb();
-  res.json(db.whatsapp_settings);
+app.get('/api/whatsapp-settings', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('whatsapp_settings')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (error) throw error;
+    res.json(data || {
+      id: 1,
+      webhook_verify_token: 'doctors_tower_verify_token_123',
+      access_token: '',
+      app_secret: '',
+      phone_number_id: '',
+      is_active: true
+    });
+  } catch (err: any) {
+    console.error('Fetch whatsapp settings error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch settings' });
+  }
 });
 
-app.post('/api/whatsapp-settings', (req, res) => {
+app.post('/api/whatsapp-settings', async (req, res) => {
   const { webhook_verify_token, access_token, app_secret, phone_number_id, is_active } = req.body;
-  const db = readDb();
-  db.whatsapp_settings = {
-    ...db.whatsapp_settings,
-    webhook_verify_token: webhook_verify_token !== undefined ? webhook_verify_token : db.whatsapp_settings.webhook_verify_token,
-    access_token: access_token !== undefined ? access_token : db.whatsapp_settings.access_token,
-    app_secret: app_secret !== undefined ? app_secret : db.whatsapp_settings.app_secret,
-    phone_number_id: phone_number_id !== undefined ? phone_number_id : db.whatsapp_settings.phone_number_id,
-    is_active: is_active !== undefined ? is_active : db.whatsapp_settings.is_active
-  };
-  writeDb(db);
-  res.json(db.whatsapp_settings);
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('whatsapp_settings')
+      .upsert({
+        id: 1,
+        webhook_verify_token,
+        access_token,
+        app_secret,
+        phone_number_id,
+        is_active
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err: any) {
+    console.error('Update whatsapp settings error:', err.message);
+    res.status(500).json({ error: 'Failed to update settings' });
+  }
 });
 
 // 6. SYSTEM SETTINGS ENDPOINTS (Change password)
-app.get('/api/system-settings', (req, res) => {
-  const db = readDb();
-  // Safe return: omit Password from JSON response to clients
-  res.json({
-    receptionist_name_required: db.system_settings.receptionist_name_required
-  });
+app.get('/api/system-settings', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('system_settings')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (error) throw error;
+    res.json({
+      receptionist_name_required: data ? data.receptionist_name_required : false
+    });
+  } catch (err: any) {
+    console.error('Fetch system settings error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch settings' });
+  }
 });
 
-app.post('/api/system-settings', (req, res) => {
+app.post('/api/system-settings', async (req, res) => {
   const { admin_password } = req.body;
   if (!admin_password) return res.status(400).json({ error: 'كلمة المرور مطلوبة' });
-  
-  const db = readDb();
-  db.system_settings.admin_password = admin_password;
-  writeDb(db);
-  res.json({ success: true, message: 'تم تحديث كلمة المرور بنجاح.' });
+  try {
+    const supabase = getSupabase();
+    const { error } = await supabase
+      .from('system_settings')
+      .upsert({ id: 1, admin_password });
+
+    if (error) throw error;
+    res.json({ success: true, message: 'تم تحديث كلمة المرور بنجاح.' });
+  } catch (err: any) {
+    console.error('Update system settings error:', err.message);
+    res.status(500).json({ error: 'Failed to update settings' });
+  }
 });
 
 // 7. GET CHAT LOGS
-app.get('/api/whatsapp-logs', (req, res) => {
-  const db = readDb();
-  // Sort logs by timestamp desc
-  const sorted = [...db.whatsapp_logs].sort((a,b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  res.json(sorted);
+app.get('/api/whatsapp-logs', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('whatsapp_logs')
+      .select('*')
+      .order('timestamp', { ascending: false });
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err: any) {
+    console.error('Fetch whatsapp logs error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch logs' });
+  }
 });
 
 // Clear log utility
-app.delete('/api/whatsapp-logs', (req, res) => {
-  const db = readDb();
-  db.whatsapp_logs = [];
-  writeDb(db);
-  res.json({ success: true });
+app.delete('/api/whatsapp-logs', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { error } = await supabase
+      .from('whatsapp_logs')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Clear whatsapp logs error:', err.message);
+    res.status(500).json({ error: 'Failed to clear logs' });
+  }
 });
 
 // -------------------------------------------------------------------------
@@ -1182,76 +862,76 @@ app.delete('/api/whatsapp-logs', (req, res) => {
 
 /**
  * Daily Unpaid Booking Cleanup Cron Job
- * Matches requirement: Cleanup bookings where payment_status is 'pending' AND 48 hours have passed since booking creation date.
  */
-app.post('/api/cron/cleanup-bookings', (req, res) => {
-  const db = readDb();
-  const yemenNow = getYemenTime();
-  const fortyEightHoursMs = 48 * 60 * 60 * 1000;
-  let cancelledCount = 0;
+app.post('/api/cron/cleanup-bookings', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const yemenNow = getYemenTime();
+    const fortyEightHoursAgo = new Date(yemenNow.getTime() - 48 * 60 * 60 * 1000).toISOString();
 
-  db.bookings = db.bookings.map(booking => {
-    if (booking.payment_status === 'pending' && booking.status !== 'cancelled') {
-      const createdTime = new Date(booking.created_at || booking.booking_date).getTime();
-      const diffMs = yemenNow.getTime() - createdTime;
+    const { data: bookingsToCancel, error: fetchErr } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('payment_status', 'pending')
+      .neq('status', 'cancelled')
+      .lt('created_at', fortyEightHoursAgo);
 
-      if (diffMs > fortyEightHoursMs) {
-        cancelledCount++;
-        // Update booking to cancelled
-        const updated = {
-          ...booking,
-          status: 'cancelled' as BookingStatus,
-          payment_status: 'cancelled' as PaymentStatus
-        };
-        
-        // Restore schedule capacity
-        const schIdx = db.schedules.findIndex(s => s.id === booking.schedule_id);
-        if (schIdx !== -1) {
-          db.schedules[schIdx].available_capacity = Math.min(
-            db.schedules[schIdx].max_capacity,
-            db.schedules[schIdx].available_capacity + 1
-          );
+    if (fetchErr) throw fetchErr;
+
+    let cancelledCount = 0;
+    if (bookingsToCancel && bookingsToCancel.length > 0) {
+      for (const b of bookingsToCancel) {
+        const { error: cancelErr } = await supabase
+          .from('bookings')
+          .update({
+            status: 'cancelled',
+            payment_status: 'cancelled'
+          })
+          .eq('id', b.id);
+
+        if (!cancelErr) {
+          cancelledCount++;
         }
-        return updated;
       }
     }
-    return booking;
-  });
 
-  if (cancelledCount > 0) {
-    writeDb(db);
+    res.json({
+      success: true,
+      message: `تم تشغيل عملية تنظيف الحجوزات غير المدفوعة تلقائياً. المجموع الملغي: ${cancelledCount} حجز منتهي الصلاحية.`
+    });
+  } catch (err: any) {
+    console.error('Clean up bookings cron error:', err.message);
+    res.status(500).json({ error: 'Failed to run cleanup cron' });
   }
-
-  res.json({
-    success: true,
-    message: `تم تشغيل عملية تنظيف الحجوزات غير المدفوعة تلقائياً. المجموع الملغي: ${cancelledCount} حجز منتهي الصلاحية (مر عليها أكثر من 48 ساعة).`
-  });
 });
 
 /**
  * Weekly Reset Trigger Cron Job
- * configured via vercel.json / Thursday 10:00 PM Yemen Time.
- * Resets capacities back to max, clear bot sessions to start new week fresh.
  */
-app.post('/api/cron/reset-weekly', (req, res) => {
-  const db = readDb();
-  
-  // Reset all capacities
-  db.schedules = db.schedules.map(sch => ({
-    ...sch,
-    available_capacity: sch.max_capacity
-  }));
+app.post('/api/cron/reset-weekly', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { error: rpcErr } = await supabase.rpc('reset_weekly_schedules_and_queues');
+    
+    if (rpcErr) {
+      console.warn('RPC execution failed, using direct queries callback fallback...', rpcErr);
+      const { data: schs } = await supabase.from('schedules').select('*');
+      if (schs) {
+        for (const s of schs) {
+          await supabase.from('schedules').update({ available_capacity: s.max_capacity }).eq('id', s.id);
+        }
+      }
+      await supabase.from('bot_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    }
 
-  // Clear running bot sessions
-  const activeSessionKeysCount = Object.keys(db.bot_sessions).length;
-  db.bot_sessions = {};
-
-  writeDb(db);
-
-  res.json({
-    success: true,
-    message: `تم تشغيل وإعادة تهيئة الدورة الأسبوعية بنجاح. الاستعادة لـ ${db.schedules.length} جداول أطباء، وتصفير ${activeSessionKeysCount} جلسات حجز جارية.`
-  });
+    res.json({
+      success: true,
+      message: 'تم تشغيل وإعادة تهيئة الدورة الأسبوعية بنجاح.'
+    });
+  } catch (err: any) {
+    console.error('Weekly reset cron error:', err.message);
+    res.status(500).json({ error: 'Failed to run weekly reset cron' });
+  }
 });
 
 
@@ -1298,74 +978,96 @@ async function sendWhatsAppMessage(to: string, text: string, settings: { access_
 /**
  * Webhook GET verification route for Meta verification step configuration
  */
-app.get('/api/webhook/whatsapp', (req, res) => {
-  const db = readDb();
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+app.get('/api/webhook/whatsapp', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { data: settings } = await supabase
+      .from('whatsapp_settings')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
 
-  const expectedToken = db.whatsapp_settings.webhook_verify_token || process.env.WHATSAPP_VERIFY_TOKEN || 'doctors_tower_verify_token_123';
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
 
-  if (mode && token) {
-    if (mode === 'subscribe' && token === expectedToken) {
-      console.log('WhatsApp Webhook Verified Successfully!');
-      return res.status(200).send(challenge);
-    } else {
-      return res.status(403).send('Forbidden: Invalid Verify Token');
+    const expectedToken = settings?.webhook_verify_token || process.env.WHATSAPP_VERIFY_TOKEN || 'doctors_tower_verify_token_123';
+
+    if (mode && token) {
+      if (mode === 'subscribe' && token === expectedToken) {
+        console.log('WhatsApp Webhook Verified Successfully!');
+        return res.status(200).send(challenge);
+      } else {
+        return res.status(403).send('Forbidden: Invalid Verify Token');
+      }
     }
+    return res.status(400).send('Bad Request');
+  } catch (err: any) {
+    console.error('Webhook verification error:', err.message);
+    return res.status(500).send('Internal Server Error');
   }
-  return res.status(400).send('Bad Request');
 });
 
 /**
  * Webhook POST handler for incoming messaging payloads
  */
 app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
-  const db = readDb();
-  const signature = req.headers['x-hub-signature-256'] as string;
-  const appSecret = db.whatsapp_settings.app_secret || process.env.META_APP_SECRET;
+  try {
+    const supabase = getSupabase();
+    const { data: settings } = await supabase
+      .from('whatsapp_settings')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
 
-  // Webhook security verification: If App Secret is configured, verify SHA256 signature
-  if (appSecret && signature) {
-    const rawBodyStr = (req as any).rawBody || JSON.stringify(req.body);
-    const hash = 'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBodyStr).digest('hex');
-    
-    if (signature !== hash) {
-      console.warn('[WhatsApp Webhook Warning] Signature verification mismatch. Proceeding with caution for fallback uptime support.');
-    } else {
-      console.log('[WhatsApp Webhook Success] Signature verification checked successfully.');
+    const signature = req.headers['x-hub-signature-256'] as string;
+    const appSecret = settings?.app_secret || process.env.META_APP_SECRET;
+
+    // Webhook security verification: If App Secret is configured, verify SHA256 signature
+    if (appSecret && signature) {
+      const rawBodyStr = (req as any).rawBody || JSON.stringify(req.body);
+      const hash = 'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBodyStr).digest('hex');
+      
+      if (signature !== hash) {
+        console.warn('[WhatsApp Webhook Warning] Signature verification mismatch. Proceeding with caution for fallback uptime support.');
+      } else {
+        console.log('[WhatsApp Webhook Success] Signature verification checked successfully.');
+      }
     }
-  }
 
-  // Parse Meta WhatsApp Cloud API body message
-  const entry = req.body.entry?.[0];
-  const changes = entry?.changes?.[0];
-  const value = changes?.value;
-  const messageObj = value?.messages?.[0];
+    // Parse Meta WhatsApp Cloud API body message
+    const entry = req.body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+    const messageObj = value?.messages?.[0];
 
-  if (messageObj) {
-    const fromPhone = messageObj.from; // e.g., '96777123456'
-    
-    // Core Bot state processing logic
-    const botResponse = handleWhatsappFlow(fromPhone, messageObj);
-    
-    // Attempt dispatch via real Meta WhatsApp API if credentials are ready
-    const accessToken = db.whatsapp_settings.access_token || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
-    const phoneNumberId = db.whatsapp_settings.phone_number_id || process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.META_PHONE_NUMBER_ID;
-    const isWebhookActive = db.whatsapp_settings.is_active !== false;
+    if (messageObj) {
+      const fromPhone = messageObj.from; // e.g., '96777123456'
+      
+      // Core Bot state processing logic
+      const botResponse = await handleWhatsappFlow(fromPhone, messageObj);
+      
+      // Attempt dispatch via real Meta WhatsApp API if credentials are ready
+      const accessToken = settings?.access_token || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
+      const phoneNumberId = settings?.phone_number_id || process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.META_PHONE_NUMBER_ID;
+      const isWebhookActive = settings ? settings.is_active !== false : true;
 
-    if (isWebhookActive && accessToken && phoneNumberId) {
-      console.log(`[WhatsApp Webhook] Dispatching active API call for [+${fromPhone}] via Graph API...`);
-      await sendWhatsAppMessage(fromPhone, botResponse, {
-        access_token: accessToken,
-        phone_number_id: phoneNumberId
-      });
-    } else {
-      console.log(`[WhatsApp Webhook Simulated] Replayed [+${fromPhone}]: "${botResponse}" (Real API skipped: active=${isWebhookActive}, token=${!!accessToken}, phone=${!!phoneNumberId})`);
+      if (isWebhookActive && accessToken && phoneNumberId) {
+        console.log(`[WhatsApp Webhook] Dispatching active API call for [+${fromPhone}] via Graph API...`);
+        await sendWhatsAppMessage(fromPhone, botResponse, {
+          access_token: accessToken,
+          phone_number_id: phoneNumberId
+        });
+      } else {
+        console.log(`[WhatsApp Webhook Simulated] Replayed [+${fromPhone}]: "${botResponse}" (Real API skipped: active=${isWebhookActive}, token=${!!accessToken}, phone=${!!phoneNumberId})`);
+      }
     }
-  }
 
-  res.status(200).json({ success: true });
+    res.status(200).json({ success: true });
+  } catch (err: any) {
+    console.error('Webhook processing exception:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 
@@ -1480,30 +1182,33 @@ function getGroupedDatesForDoctor(
   return { prompt, options };
 }
 
-function handleWhatsappFlow(phone: string, messageObj: any): string {
-  const db = readDb();
+async function handleWhatsappFlow(phone: string, messageObj: any): Promise<string> {
+  const supabase = getSupabase();
   const currentYemenNow = getYemenTime();
   
   // Log inbound message
   const isTextMessage = messageObj.type === 'text';
   let messageText = isTextMessage ? (messageObj.text?.body || '').trim() : '';
 
-  const incomingLog: WhatsAppLog = {
-    id: `log-${Date.now()}-in`,
+  await supabase.from('whatsapp_logs').insert([{
     phone,
     direction: 'in',
     message: isTextMessage ? messageText : `[رسالة وسائط متعددة أو غير مدعومة: ${messageObj.type}]`,
     timestamp: currentYemenNow.toISOString()
-  };
-  db.whatsapp_logs.push(incomingLog);
+  }]);
 
-  // Load or construct active bot session state
-  let session: BotSession = db.bot_sessions[phone];
+  // Load or construct active bot session state from Supabase
+  const { data: dbSession } = await supabase
+    .from('bot_sessions')
+    .select('*')
+    .eq('phone', phone)
+    .maybeSingle();
+
+  let session = dbSession;
   const isNewSession = !session;
 
   if (isNewSession) {
     session = {
-      id: `sess-${Date.now()}`,
       phone,
       current_state: 'IDLE',
       patient_name: null,
@@ -1516,23 +1221,28 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
     };
   }
 
-  const outputReply = (replyMessage: string, nextState: BotState) => {
+  const outputReply = async (replyMessage: string, nextState: string) => {
     // Record log out
-    const outgoingLog: WhatsAppLog = {
-      id: `log-${Date.now()}-out`,
+    await supabase.from('whatsapp_logs').insert([{
       phone,
       direction: 'out',
       message: replyMessage,
       timestamp: getYemenTime().toISOString()
+    }]);
+
+    // Update Session in Supabase
+    const nextSession = {
+      ...session,
+      current_state: nextState,
+      last_interaction_at: getYemenTime().toISOString()
     };
-    db.whatsapp_logs.push(outgoingLog);
 
-    // Update Session
-    session.current_state = nextState;
-    session.last_interaction_at = getYemenTime().toISOString();
-    db.bot_sessions[phone] = session;
+    if (isNewSession) {
+      await supabase.from('bot_sessions').insert([nextSession]);
+    } else {
+      await supabase.from('bot_sessions').update(nextSession).eq('phone', phone);
+    }
 
-    writeDb(db);
     return replyMessage;
   };
 
@@ -1542,7 +1252,6 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
     const diffMin = (currentYemenNow.getTime() - lastTime) / (1000 * 60);
 
     if (diffMin > 10) {
-      // CLEAR State and trigger timeout feedback
       session = {
         ...session,
         current_state: 'IDLE',
@@ -1573,10 +1282,13 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
   // STATE MACHINE RUN
   const state = session.current_state;
 
+  // Retrieve doctors and schedules
+  const { data: activeDocs } = await supabase.from('doctors').select('*').eq('is_active', true);
+  const { data: activeSchedules } = await supabase.from('schedules').select('*');
+
   // FORCE RESET IF "تسجيل" IS SENT AT ANY STATE
   if (messageText === 'تسجيل') {
-    const activeDocs = db.doctors.filter(d => d.is_active);
-    if (activeDocs.length === 0) {
+    if (!activeDocs || activeDocs.length === 0) {
       return outputReply(
         "عذراً، لا يوجد أطباء متاحين للجدولة حالياً في المشفي. يرجى مراجعة إدارة المستشفي.",
         'IDLE'
@@ -1588,7 +1300,6 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
       docsPrompt += `\n*${idx + 1}* - ${doc.name} (${doc.specialty})`;
     });
 
-    // Reset session values for selection clean slate
     session.patient_name = null;
     session.selected_doctor_id = null;
     session.selected_shift = null;
@@ -1600,8 +1311,7 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
 
   if (state === 'IDLE' || state === 'COMPLETED') {
     if (messageText === '1' || messageText.toLowerCase().includes('مرحبا') || messageText.toLowerCase().includes('سلام')) {
-      const activeDocs = db.doctors.filter(d => d.is_active);
-      if (activeDocs.length === 0) {
+      if (!activeDocs || activeDocs.length === 0) {
         return outputReply(
           "عذراً، لا يوجد أطباء متاحين للجدولة حالياً في المشفي. يرجى مراجعة إدارة المستشفي.",
           'IDLE'
@@ -1613,7 +1323,6 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
         docsPrompt += `\n*${idx + 1}* - ${doc.name} (${doc.specialty})`;
       });
 
-      // Reset session values for selection clean slate
       session.patient_name = null;
       session.selected_doctor_id = null;
       session.selected_shift = null;
@@ -1631,9 +1340,7 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
 
   if (state === 'SELECTING_DOCTOR') {
     const selectedIdx = parseInt(messageText) - 1;
-    const activeDocs = db.doctors.filter(d => d.is_active);
-
-    if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= activeDocs.length) {
+    if (isNaN(selectedIdx) || !activeDocs || selectedIdx < 0 || selectedIdx >= activeDocs.length) {
       return outputReply(
         "عذراً، لم أتمكن من فهم طلبك. الرجاء الالتزام بالخيارات المتاحة وإرسال رقم الطبيب الصحيح.",
         'SELECTING_DOCTOR'
@@ -1643,7 +1350,7 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
     const doctor = activeDocs[selectedIdx];
     session.selected_doctor_id = doctor.id;
 
-    const docSchedules = db.schedules.filter(s => s.doctor_id === doctor.id);
+    const docSchedules = (activeSchedules || []).filter(s => s.doctor_id === doctor.id);
     if (docSchedules.length === 0) {
       let failPrompt = `عذراً، الطبيب *${doctor.name}* لا يوجد لديه عيادات مجدولة هذا الأسبوع حالياً.\n`;
       failPrompt += "يرجى اختيار طبيب آخر من القائمة التالية:\n";
@@ -1653,17 +1360,19 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
       return outputReply(failPrompt, 'SELECTING_DOCTOR');
     }
 
-    // Go directly to day and date selection (using grouped date prompts with NO remaining seats mention)
     session.selected_shift = null;
-    const { prompt } = getGroupedDatesForDoctor(doctor, db.schedules);
+    const { prompt } = getGroupedDatesForDoctor(doctor, activeSchedules || []);
     return outputReply(prompt, 'SELECTING_DAY');
   }
 
   if (state === 'SELECTING_DAY') {
     const selectedIdx = parseInt(messageText) - 1;
-    const doctor = db.doctors.find(d => d.id === session.selected_doctor_id!)!;
+    const doctor = activeDocs?.find(d => d.id === session.selected_doctor_id!);
     
-    const { options } = getGroupedDatesForDoctor(doctor, db.schedules);
+    if (!doctor) {
+      return outputReply("عذراً، حدث خطأ ما في الجلسة. يرجى إرسال كلمة 'تسجيل' للبدء من جديد.", 'IDLE');
+    }
+    const { options } = getGroupedDatesForDoctor(doctor, activeSchedules || []);
 
     if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= options.length) {
       return outputReply(
@@ -1685,23 +1394,36 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
       // Exactly 1 schedule on this day
       const matchedSchedule = option.schedules[0];
 
-      // Check Capacity for this specific schedule
-      const currentBookings = db.bookings.filter(b => b.doctor_id === doctor.id && b.booking_date === option.date && b.schedule_id === matchedSchedule.id && b.status !== 'cancelled').length;
-      if (currentBookings >= matchedSchedule.max_capacity) {
+      // Check Capacity for this specific schedule with a real live select count
+      const { count: currentBookingsCount } = await supabase
+        .from('bookings')
+        .select('*', { count: 'exact', head: true })
+        .eq('doctor_id', doctor.id)
+        .eq('booking_date', option.date)
+        .eq('schedule_id', matchedSchedule.id)
+        .neq('status', 'cancelled');
+
+      const liveBookings = currentBookingsCount || 0;
+      if (liveBookings >= matchedSchedule.max_capacity) {
         return outputReply("اكتمل التسجيل في هذا اليوم، الرجاء اختيار يوم آخر", 'SELECTING_DAY');
       }
 
       // Check anti-spam limit
       if (doctor.limit_two_patients_per_number) {
-        const patientBookings = db.bookings.filter(b => b.doctor_id === doctor.id && b.patient_phone === phone && b.status !== 'cancelled').length;
-        if (patientBookings >= 2) {
+        const { count: patientBookingsCount } = await supabase
+          .from('bookings')
+          .select('*', { count: 'exact', head: true })
+          .eq('doctor_id', doctor.id)
+          .eq('patient_phone', phone)
+          .neq('status', 'cancelled');
+
+        if ((patientBookingsCount || 0) >= 2) {
           session.current_state = 'IDLE';
           session.selected_doctor_id = null;
           session.selected_shift = null;
           session.selected_schedule_id = null;
           session.selected_date = null;
-          db.bot_sessions[phone] = session;
-          writeDb(db);
+          await supabase.from('bot_sessions').delete().eq('phone', phone);
           return outputReply(
             "عذراً، لقد تم الوصول إلى الحد الأقصى للتسجيل (مريضين كحد أقصى) لهذا الطبيب من رقم هذا الهاتف.",
             'IDLE'
@@ -1731,16 +1453,18 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
       );
     }
 
-    const doctor = db.doctors.find(d => d.id === session.selected_doctor_id!)!;
+    const doctor = activeDocs?.find(d => d.id === session.selected_doctor_id!)!;
+    if (!doctor) {
+      return outputReply("عذراً، حدث خطأ في الجلسة. يرجى البدء مجدداً بكتابة 'تسجيل'.", 'IDLE');
+    }
     const selectedDateStr = session.selected_date!;
     
-    const { options } = getGroupedDatesForDoctor(doctor, db.schedules);
+    const { options } = getGroupedDatesForDoctor(doctor, activeSchedules || []);
     const matchedOption = options.find(o => o.date === selectedDateStr);
     
     if (!matchedOption) {
       session.current_state = 'IDLE';
-      db.bot_sessions[phone] = session;
-      writeDb(db);
+      await supabase.from('bot_sessions').delete().eq('phone', phone);
       return outputReply("عذراً، حدث خطأ ما في الجلسة. يرجى إرسال كلمة 'تسجيل' للبدء من جديد.", 'IDLE');
     }
 
@@ -1758,23 +1482,35 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
       );
     }
 
-    // Check Capacity
-    const currentBookings = db.bookings.filter(b => b.doctor_id === doctor.id && b.booking_date === selectedDateStr && b.schedule_id === matchedSchedule.id && b.status !== 'cancelled').length;
-    if (currentBookings >= matchedSchedule.max_capacity) {
+    // Check Capacity with real select count
+    const { count: currentBookingsCount } = await supabase
+      .from('bookings')
+      .select('*', { count: 'exact', head: true })
+      .eq('doctor_id', doctor.id)
+      .eq('booking_date', selectedDateStr)
+      .eq('schedule_id', matchedSchedule.id)
+      .neq('status', 'cancelled');
+
+    if ((currentBookingsCount || 0) >= matchedSchedule.max_capacity) {
       return outputReply("عذراً، هذه الفترة متكاملة العدد للحجوزات لهذا اليوم. الرجاء إرسال 'تسجيل' لبدء الاختيار من جديد لموعد أو طبيب آخر.", 'IDLE');
     }
 
     // Check anti-spam limit
     if (doctor.limit_two_patients_per_number) {
-      const patientBookings = db.bookings.filter(b => b.doctor_id === doctor.id && b.patient_phone === phone && b.status !== 'cancelled').length;
-      if (patientBookings >= 2) {
+      const { count: patientBookingsCount } = await supabase
+        .from('bookings')
+        .select('*', { count: 'exact', head: true })
+        .eq('doctor_id', doctor.id)
+        .eq('patient_phone', phone)
+        .neq('status', 'cancelled');
+
+      if ((patientBookingsCount || 0) >= 2) {
         session.current_state = 'IDLE';
         session.selected_doctor_id = null;
         session.selected_shift = null;
         session.selected_schedule_id = null;
         session.selected_date = null;
-        db.bot_sessions[phone] = session;
-        writeDb(db);
+        await supabase.from('bot_sessions').delete().eq('phone', phone);
         return outputReply(
           "عذراً، لقد تم الوصول إلى الحد الأقصى للتسجيل (مريضين كحد أقصى) لهذا الطبيب من رقم هذا الهاتف.",
           'IDLE'
@@ -1799,13 +1535,15 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
       return outputReply("يرجى كتابة اسم المريض الثلاثي أو الرباعي بشكل صحيح لتأكيد وحفظ الحجز.", 'AWAITING_NAME');
     }
 
-    // Check duplicate name for this specific doctor on this specific date
-    const nameExists = db.bookings.some(b => 
-      b.doctor_id === doctorId && 
-      b.booking_date === dateStr && 
-      b.patient_name.trim().toLowerCase() === nameInput.toLowerCase() && 
-      b.status !== 'cancelled'
-    );
+    // Check duplicate name for this specific doctor on this specific date in Supabase
+    const { data: nameExists } = await supabase
+      .from('bookings')
+      .select('id')
+      .eq('doctor_id', doctorId)
+      .eq('booking_date', dateStr)
+      .ilike('patient_name', nameInput)
+      .neq('status', 'cancelled')
+      .maybeSingle();
 
     if (nameExists) {
       return outputReply(
@@ -1814,39 +1552,38 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
       );
     }
 
-    const schedule = db.schedules.find(s => s.id === session.selected_schedule_id!)!;
+    const schedule = activeSchedules?.find(s => s.id === session.selected_schedule_id!)!;
     
-    // Assign Sequential Queue Number (Separated per shift schedule block!)
-    const existingBookings = db.bookings.filter(b => 
-      b.doctor_id === doctorId && 
-      b.booking_date === dateStr && 
-      b.schedule_id === schedule.id &&
-      b.status !== 'cancelled'
-    );
-    const nextQueue = existingBookings.length > 0 ? Math.max(...existingBookings.map(b => b.queue_number)) + 1 : 1;
+    // Save actual booking to database - Let Supabase PG trigger assign queue number and decrements capacity atomic-safe!
+    const { data: insertedBooking, error: insertErr } = await supabase
+      .from('bookings')
+      .insert([{
+        doctor_id: doctorId,
+        schedule_id: schedule.id,
+        patient_name: nameInput,
+        patient_phone: phone,
+        booking_date: dateStr,
+        queue_number: 0, // Assigned by PG Trigger
+        status: 'pending',
+        payment_status: 'pending',
+        verified_by_whatsapp: true
+      }])
+      .select()
+      .single();
 
-    // Save actual booking to database (Supabase mockup db state)
-    const newBooking: Booking = {
-      id: `book-${Date.now()}`,
-      doctor_id: doctorId,
-      schedule_id: schedule.id,
-      patient_name: nameInput,
-      patient_phone: phone,
-      booking_date: dateStr,
-      queue_number: nextQueue,
-      status: 'pending', // Starts pending payment validation
-      payment_status: 'pending',
-      verified_by_whatsapp: true,
-      created_at: getYemenTime().toISOString()
-    };
-
-    db.bookings.push(newBooking);
-
-    // Decrement capacity
-    const schIdx = db.schedules.findIndex(s => s.id === schedule.id);
-    if (schIdx !== -1) {
-      db.schedules[schIdx].available_capacity = Math.max(0, db.schedules[schIdx].available_capacity - 1);
+    if (insertErr) {
+      console.error('Error on bot booking save:', insertErr.message);
+      return outputReply("عذراً، واجه نظام التخزين حطاً عاثراً أثناء حفظ حجزك. يرجى المحاولة لاحقاً.", 'IDLE');
     }
+
+    // Fetch the inserted booking again to get the trigger assigned queue_number
+    const { data: finalisedBooking } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('id', insertedBooking.id)
+      .single();
+
+    const finalQueue = finalisedBooking?.queue_number || 1;
 
     // Calculate deadline Date + 2 days
     const deadlineDate = new Date();
@@ -1856,10 +1593,10 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
     const isMorning = parseInt(schedule.start_time.split(':')[0]) < 13;
     const shiftLabel = isMorning ? 'صباحية' : 'مسائية';
     const dayLabel = getDayNameArabic(schedule.day_of_week);
-    const circleQueue = getCircledNumber(nextQueue);
+    const circleQueue = getCircledNumber(finalQueue);
 
     const successMsg = `تم تأكيد الحجز بنجاح،
-الاسم: ${nameInput}
+الاسم: ${finalisedBooking?.patient_name || nameInput}
 رقمك هو: ${circleQueue}
 الفترة: ${shiftLabel}
 موعدك هو: ( ${dayLabel} ) ( ${dateStr} )
@@ -1867,18 +1604,11 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
 (يرجى تأكيد الحجز بواسطة دفع رسوم التسجيل خلال يومين من هذا التاريخ ${deadlineStr}، وإلا سيعتبر الحجز لاغياً، وشكراً).`;
 
     // Clear session state
-    db.bot_sessions[phone] = {
-      ...session,
-      current_state: 'IDLE',
-      patient_name: null,
-      selected_doctor_id: null,
-      selected_shift: null,
-      selected_schedule_id: null,
-      selected_date: null,
-      last_interaction_at: getYemenTime().toISOString()
-    };
+    await supabase
+      .from('bot_sessions')
+      .delete()
+      .eq('phone', phone);
 
-    writeDb(db);
     return outputReply(successMsg, 'IDLE');
   }
 
@@ -1888,7 +1618,7 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
 // -------------------------------------------------------------------------
 // SIMULATOR INTERACTIVE HELPER
 // -------------------------------------------------------------------------
-app.post('/api/simulator/send-message', (req, res) => {
+app.post('/api/simulator/send-message', async (req, res) => {
   const { phone, message } = req.body;
   if (!phone || !message) {
     return res.status(400).json({ error: 'الحقول المطلوبة مفقودة' });
@@ -1900,17 +1630,28 @@ app.post('/api/simulator/send-message', (req, res) => {
     text: { body: message }
   };
 
-  const responseText = handleWhatsappFlow(phone, mockMetaMsg);
-  const db = readDb();
-  const session = db.bot_sessions[phone] || null;
+  try {
+    const responseText = await handleWhatsappFlow(phone, mockMetaMsg);
+    
+    // Fetch current state
+    const supabase = getSupabase();
+    const { data: session } = await supabase
+      .from('bot_sessions')
+      .select('*')
+      .eq('phone', phone)
+      .maybeSingle();
 
-  res.json({
-    phone,
-    sentMessage: message,
-    receivedReply: responseText,
-    currentSessionState: session ? session.current_state : 'IDLE',
-    sessionDetails: session
-  });
+    res.json({
+      phone,
+      sentMessage: message,
+      receivedReply: responseText,
+      currentSessionState: session ? session.current_state : 'IDLE',
+      sessionDetails: session
+    });
+  } catch (err: any) {
+    console.error('Simulator message execution error:', err.message);
+    res.status(500).json({ error: 'Failed to execute simulator flow step' });
+  }
 });
 
 // -------------------------------------------------------------------------
@@ -1918,14 +1659,6 @@ app.post('/api/simulator/send-message', (req, res) => {
 // -------------------------------------------------------------------------
 
 async function startServer() {
-  // Pre-hydrate/restore DB state from Supabase to provide zero-loss durability on cold-start
-  try {
-    await ensureDbHydrated();
-    console.log('[Database] Database initial setup and hydration completed.');
-  } catch (err) {
-    console.error('[Database] Failed to coordinate Supabase state sync on cold-start:', err);
-  }
-
   // Vite integration middleware
   if (process.env.NODE_ENV !== 'production') {
     const viteModuleName = 'vite';
@@ -1945,7 +1678,6 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`full-stack portal bound on http://0.0.0.0:${PORT}`);
-    console.log(`Persisting DB to: ${DB_FILE}`);
   });
 }
 
