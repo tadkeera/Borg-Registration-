@@ -1184,46 +1184,85 @@ function checkMultipleShifts(doctorId: string, schedules: Schedule[]): boolean {
   return dupDays.size > 0;
 }
 
-function getDatesPromptForDoctor(
+interface GroupedDayOption {
+  day_of_week: number;
+  date: string;
+  weekLabel: string;
+  schedules: Schedule[];
+}
+
+function getGroupedDatesForDoctor(
   doctor: Doctor,
-  shift: 'morning' | 'evening' | null,
-  schedules: Schedule[],
-  bookings: Booking[]
-): { prompt: string; options: { schedule: Schedule; date: string }[] } {
+  schedules: Schedule[]
+): { prompt: string; options: GroupedDayOption[] } {
   const docSchedules = schedules.filter(s => s.doctor_id === doctor.id);
   
-  const filtered = docSchedules.filter(s => {
-    if (!shift) return true;
-    const startHour = parseInt(s.start_time.split(':')[0]);
-    const isMorning = startHour < 13;
-    return shift === 'morning' ? isMorning : !isMorning;
-  }).sort((a,b) => a.day_of_week - b.day_of_week);
-
-  const options: { schedule: Schedule; date: string }[] = [];
-  let count = 1;
-  let prompt = `عيادات الطبيب *${doctor.name}* متوفرة في الأيام التالية. يرجى حجز اليوم بكتابة رقمه المقابل:`;
-  
-  filtered.forEach(s => {
-    const dayName = getDayNameArabic(s.day_of_week);
-    const date1 = getTargetDate(s.day_of_week);
-    
-    // Calculate available capacity for date1
-    const bkCount1 = bookings.filter(b => b.doctor_id === doctor.id && b.booking_date === date1 && b.status !== 'cancelled').length;
-    const cap1 = Math.max(0, s.max_capacity - bkCount1);
-    
-    options.push({ schedule: s, date: date1 });
-    prompt += `\n\n*${count++}* - ${dayName} - الأسبوع الحالي (${date1}) [المقاعد المتبقية: ${cap1}/${s.max_capacity}]`;
-
+  const rawOptions: { day_of_week: number; date: string; weekLabel: string; schedule: Schedule }[] = [];
+  docSchedules.forEach(s => {
+    rawOptions.push({
+      day_of_week: s.day_of_week,
+      date: getTargetDate(s.day_of_week),
+      weekLabel: 'الأسبوع الحالي',
+      schedule: s
+    });
     if (doctor.allow_second_week_booking) {
-      const date2 = getNextWeekDate(s.day_of_week);
-      const bkCount2 = bookings.filter(b => b.doctor_id === doctor.id && b.booking_date === date2 && b.status !== 'cancelled').length;
-      const cap2 = Math.max(0, s.max_capacity - bkCount2);
-      
-      options.push({ schedule: s, date: date2 });
-      prompt += `\n*${count++}* - ${dayName} - الأسبوع الثاني (${date2}) [المقاعد المتبقية: ${cap2}/${s.max_capacity}]`;
+      rawOptions.push({
+        day_of_week: s.day_of_week,
+        date: getNextWeekDate(s.day_of_week),
+        weekLabel: 'الأسبوع الثاني',
+        schedule: s
+      });
     }
   });
-  
+
+  // Group by date
+  const groupedMap = new Map<string, GroupedDayOption>();
+  rawOptions.forEach(raw => {
+    const existing = groupedMap.get(raw.date);
+    if (existing) {
+      if (!existing.schedules.some(s => s.id === raw.schedule.id)) {
+        existing.schedules.push(raw.schedule);
+      }
+    } else {
+      groupedMap.set(raw.date, {
+        day_of_week: raw.day_of_week,
+        date: raw.date,
+        weekLabel: raw.weekLabel,
+        schedules: [raw.schedule]
+      });
+    }
+  });
+
+  const options = Array.from(groupedMap.values()).sort((a, b) => {
+    return new Date(a.date).getTime() - new Date(b.date).getTime();
+  });
+
+  let count = 1;
+  let prompt = `عيادات الطبيب *${doctor.name}* متوفرة في الأيام التالية. يرجى حجز اليوم بكتابة رقمه المقابل:`;
+
+  options.forEach(opt => {
+    const dayName = getDayNameArabic(opt.day_of_week);
+    
+    // Determine shift labels for schedules in this day option
+    const shiftsSet = new Set<string>();
+    opt.schedules.forEach(s => {
+      const startHour = parseInt(s.start_time.split(':')[0]);
+      const isMorning = startHour < 13;
+      shiftsSet.add(isMorning ? 'صباحية' : 'مسائية');
+    });
+
+    let shiftsLabel = '';
+    if (shiftsSet.has('صباحية') && shiftsSet.has('مسائية')) {
+      shiftsLabel = 'فترة صباحية ومسائية';
+    } else if (shiftsSet.has('صباحية')) {
+      shiftsLabel = 'فترة صباحية';
+    } else if (shiftsSet.has('مسائية')) {
+      shiftsLabel = 'فترة مسائية';
+    }
+
+    prompt += `\n\n*${count++}* - ${dayName} - ${opt.weekLabel} (${opt.date}) - ${shiftsLabel}`;
+  });
+
   return { prompt, options };
 }
 
@@ -1320,8 +1359,33 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
   // STATE MACHINE RUN
   const state = session.current_state;
 
+  // FORCE RESET IF "تسجيل" IS SENT AT ANY STATE
+  if (messageText === 'تسجيل') {
+    const activeDocs = db.doctors.filter(d => d.is_active);
+    if (activeDocs.length === 0) {
+      return outputReply(
+        "عذراً، لا يوجد أطباء متاحين للجدولة حالياً في المشفي. يرجى مراجعة إدارة المستشفي.",
+        'IDLE'
+      );
+    }
+
+    let docsPrompt = "أهلاً بك في مستشفى برج الأطباء. الرجاء إرسال رقم الطبيب الذي تريد التسجيل لديه:\n";
+    activeDocs.forEach((doc, idx) => {
+      docsPrompt += `\n*${idx + 1}* - ${doc.name} (${doc.specialty})`;
+    });
+
+    // Reset session values for selection clean slate
+    session.patient_name = null;
+    session.selected_doctor_id = null;
+    session.selected_shift = null;
+    session.selected_schedule_id = null;
+    session.selected_date = null;
+
+    return outputReply(docsPrompt, 'SELECTING_DOCTOR');
+  }
+
   if (state === 'IDLE' || state === 'COMPLETED') {
-    if (messageText === 'تسجيل' || messageText === '1' || messageText.toLowerCase().includes('مرحبا') || messageText.toLowerCase().includes('سلام')) {
+    if (messageText === '1' || messageText.toLowerCase().includes('مرحبا') || messageText.toLowerCase().includes('سلام')) {
       const activeDocs = db.doctors.filter(d => d.is_active);
       if (activeDocs.length === 0) {
         return outputReply(
@@ -1375,37 +1439,9 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
       return outputReply(failPrompt, 'SELECTING_DOCTOR');
     }
 
-    // Step 2: Check multi shift on same day
-    const hasMultipleShifts = checkMultipleShifts(doctor.id, db.schedules);
-    if (hasMultipleShifts) {
-      session.selected_shift = null;
-      return outputReply(
-        "الطبيب متاح في فترتين، يرجى اختيار الفترة:\n1. صباحية\n2. مسائية",
-        'SELECTING_SHIFT'
-      );
-    } else {
-      // Skip to Day selection
-      session.selected_shift = null;
-      const { prompt } = getDatesPromptForDoctor(doctor, null, db.schedules, db.bookings);
-      return outputReply(prompt, 'SELECTING_DAY');
-    }
-  }
-
-  if (state === 'SELECTING_SHIFT') {
-    const txt = messageText.trim();
-    if (txt === '1' || txt.includes('صباح')) {
-      session.selected_shift = 'morning';
-    } else if (txt === '2' || txt.includes('مساء')) {
-      session.selected_shift = 'evening';
-    } else {
-      return outputReply(
-        "الطبيب متاح في فترتين، يرجى اختيار الفترة:\n1. صباحية\n2. مسائية",
-        'SELECTING_SHIFT'
-      );
-    }
-
-    const doctor = db.doctors.find(d => d.id === session.selected_doctor_id!)!;
-    const { prompt } = getDatesPromptForDoctor(doctor, session.selected_shift, db.schedules, db.bookings);
+    // Go directly to day and date selection (using grouped date prompts with NO remaining seats mention)
+    session.selected_shift = null;
+    const { prompt } = getGroupedDatesForDoctor(doctor, db.schedules);
     return outputReply(prompt, 'SELECTING_DAY');
   }
 
@@ -1413,7 +1449,7 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
     const selectedIdx = parseInt(messageText) - 1;
     const doctor = db.doctors.find(d => d.id === session.selected_doctor_id!)!;
     
-    const { options } = getDatesPromptForDoctor(doctor, session.selected_shift, db.schedules, db.bookings);
+    const { options } = getGroupedDatesForDoctor(doctor, db.schedules);
 
     if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= options.length) {
       return outputReply(
@@ -1424,17 +1460,100 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
 
     const option = options[selectedIdx];
 
-    // Constraint B (Capacity Check)
-    const currentBookings = db.bookings.filter(b => b.doctor_id === doctor.id && b.booking_date === option.date && b.status !== 'cancelled').length;
-    if (currentBookings >= option.schedule.max_capacity) {
-      return outputReply("اكتمل التسجيل في هذا اليوم، الرجاء اختيار يوم آخر", 'SELECTING_DAY');
+    // If there are multiple schedules on this day (e.g. morning and evening shifts)
+    if (option.schedules.length > 1) {
+      session.selected_date = option.date;
+      return outputReply(
+        "الطبيب متاح في فترتين في هذا اليوم، يرجى اختيار الفترة:\n1. صباحية\n2. مسائية",
+        'SELECTING_SHIFT'
+      );
+    } else {
+      // Exactly 1 schedule on this day
+      const matchedSchedule = option.schedules[0];
+
+      // Check Capacity for this specific schedule
+      const currentBookings = db.bookings.filter(b => b.doctor_id === doctor.id && b.booking_date === option.date && b.schedule_id === matchedSchedule.id && b.status !== 'cancelled').length;
+      if (currentBookings >= matchedSchedule.max_capacity) {
+        return outputReply("اكتمل التسجيل في هذا اليوم، الرجاء اختيار يوم آخر", 'SELECTING_DAY');
+      }
+
+      // Check anti-spam limit
+      if (doctor.limit_two_patients_per_number) {
+        const patientBookings = db.bookings.filter(b => b.doctor_id === doctor.id && b.patient_phone === phone && b.status !== 'cancelled').length;
+        if (patientBookings >= 2) {
+          session.current_state = 'IDLE';
+          session.selected_doctor_id = null;
+          session.selected_shift = null;
+          session.selected_schedule_id = null;
+          session.selected_date = null;
+          db.bot_sessions[phone] = session;
+          writeDb(db);
+          return outputReply(
+            "عذراً، لقد تم الوصول إلى الحد الأقصى للتسجيل (مريضين كحد أقصى) لهذا الطبيب من رقم هذا الهاتف.",
+            'IDLE'
+          );
+        }
+      }
+
+      session.selected_schedule_id = matchedSchedule.id;
+      session.selected_date = option.date;
+      session.selected_shift = parseInt(matchedSchedule.start_time.split(':')[0]) < 13 ? 'morning' : 'evening';
+
+      return outputReply("يوجد متسع، الرجاء كتابة اسم المريض الرباعي لتأكيد الحجز", 'AWAITING_NAME');
+    }
+  }
+
+  if (state === 'SELECTING_SHIFT') {
+    const txt = messageText.trim();
+    let selectedShift: 'morning' | 'evening' | null = null;
+    if (txt === '1' || txt.includes('صباح')) {
+      selectedShift = 'morning';
+    } else if (txt === '2' || txt.includes('مساء')) {
+      selectedShift = 'evening';
+    } else {
+      return outputReply(
+        "الرجاء اختيار الفترة بكتابة الرقم المقابل:\n1. صباحية\n2. مسائية",
+        'SELECTING_SHIFT'
+      );
     }
 
-    // Constraint C (Anti-Spam / Limit Check)
+    const doctor = db.doctors.find(d => d.id === session.selected_doctor_id!)!;
+    const selectedDateStr = session.selected_date!;
+    
+    const { options } = getGroupedDatesForDoctor(doctor, db.schedules);
+    const matchedOption = options.find(o => o.date === selectedDateStr);
+    
+    if (!matchedOption) {
+      session.current_state = 'IDLE';
+      db.bot_sessions[phone] = session;
+      writeDb(db);
+      return outputReply("عذراً، حدث خطأ ما في الجلسة. يرجى إرسال كلمة 'تسجيل' للبدء من جديد.", 'IDLE');
+    }
+
+    const matchedSchedule = matchedOption.schedules.find(s => {
+      const startHour = parseInt(s.start_time.split(':')[0]);
+      const isMorning = startHour < 13;
+      const sShift = isMorning ? 'morning' : 'evening';
+      return sShift === selectedShift;
+    });
+
+    if (!matchedSchedule) {
+      return outputReply(
+        `عذراً، هذه الفترة غير متاحة للطبيب في هذا اليوم. المتوفر هو: ${matchedOption.schedules.map(s => parseInt(s.start_time.split(':')[0]) < 13 ? 'صباحية' : 'مسائية').join(' أو ')}. يرجى إعادة الاختيار:`,
+        'SELECTING_SHIFT'
+      );
+    }
+
+    // Check Capacity
+    const currentBookings = db.bookings.filter(b => b.doctor_id === doctor.id && b.booking_date === selectedDateStr && b.schedule_id === matchedSchedule.id && b.status !== 'cancelled').length;
+    if (currentBookings >= matchedSchedule.max_capacity) {
+      return outputReply("عذراً، هذه الفترة متكاملة العدد للحجوزات لهذا اليوم. الرجاء إرسال 'تسجيل' لبدء الاختيار من جديد لموعد أو طبيب آخر.", 'IDLE');
+    }
+
+    // Check anti-spam limit
     if (doctor.limit_two_patients_per_number) {
       const patientBookings = db.bookings.filter(b => b.doctor_id === doctor.id && b.patient_phone === phone && b.status !== 'cancelled').length;
       if (patientBookings >= 2) {
-        // Reset state and reply apology
         session.current_state = 'IDLE';
         session.selected_doctor_id = null;
         session.selected_shift = null;
@@ -1449,9 +1568,8 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
       }
     }
 
-    // Passed! Go to AWAITING_NAME
-    session.selected_schedule_id = option.schedule.id;
-    session.selected_date = option.date;
+    session.selected_schedule_id = matchedSchedule.id;
+    session.selected_shift = selectedShift;
 
     return outputReply("يوجد متسع، الرجاء كتابة اسم المريض الرباعي لتأكيد الحجز", 'AWAITING_NAME');
   }
@@ -1484,8 +1602,13 @@ function handleWhatsappFlow(phone: string, messageObj: any): string {
 
     const schedule = db.schedules.find(s => s.id === session.selected_schedule_id!)!;
     
-    // Assign Sequential Queue Number
-    const existingBookings = db.bookings.filter(b => b.doctor_id === doctorId && b.booking_date === dateStr && b.status !== 'cancelled');
+    // Assign Sequential Queue Number (Separated per shift schedule block!)
+    const existingBookings = db.bookings.filter(b => 
+      b.doctor_id === doctorId && 
+      b.booking_date === dateStr && 
+      b.schedule_id === schedule.id &&
+      b.status !== 'cancelled'
+    );
     const nextQueue = existingBookings.length > 0 ? Math.max(...existingBookings.map(b => b.queue_number)) + 1 : 1;
 
     // Save actual booking to database (Supabase mockup db state)
