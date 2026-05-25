@@ -7,7 +7,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { DbState, Doctor, Schedule, Booking, WhatsAppLog, BotSession, BotState, BookingStatus, PaymentStatus } from './src/types';
+import { DbState, Doctor, Schedule, Booking, WhatsAppLog, BotSession, BotState, BookingStatus, PaymentStatus, WhatsAppSettings, SystemSettings } from './src/types';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 
@@ -147,83 +147,206 @@ let dbSaveQueue: Promise<void> = Promise.resolve();
 let currentSavePromise: Promise<void> = Promise.resolve();
 
 let isDbHydrated = false;
-let dbHydrationPromise: Promise<void> | null = null;
 
-function ensureDbHydrated(): Promise<void> {
-  if (isDbHydrated && memoryDb) {
-    return Promise.resolve();
-  }
-  if (!dbHydrationPromise) {
-    dbHydrationPromise = (async () => {
-      try {
-        const supabaseState = await loadDbFromSupabase();
-        if (supabaseState) {
-          memoryDb = supabaseState;
-          console.log('[Database] Hydrated database successfully with Supabase remote key-value storage state.');
-        } else {
-          console.log('[Database] No remote backup state restored or Supabase not configured. Using local filesystem DB.');
-          if (!memoryDb) {
-            if (fs.existsSync(DB_FILE)) {
-              try {
-                const data = fs.readFileSync(DB_FILE, 'utf-8');
-                memoryDb = ensureDbDefaults(JSON.parse(data));
-              } catch (e) {
-                memoryDb = ensureDbDefaults(null);
-              }
-            } else {
-              memoryDb = ensureDbDefaults(null);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('[Database] Failed to coordinate Supabase state sync on cold-start/hydration:', err);
-        if (!memoryDb) {
-          memoryDb = ensureDbDefaults(null);
-        }
-      } finally {
-        isDbHydrated = true;
-      }
-    })();
-  }
-  return dbHydrationPromise;
+// Conflict Resolution State Tracking (Prevents Zombie / Deleted items from resurrecting in distributed Vercel lambdas)
+let loadedDoctorIds = new Set<string>();
+let loadedScheduleIds = new Set<string>();
+let loadedBookingIds = new Set<string>();
+let loadedUserIds = new Set<string>();
+
+function trackLoadedIds(db: DbState) {
+  if (!db) return;
+  loadedDoctorIds = new Set((db.doctors || []).map(d => d.id));
+  loadedScheduleIds = new Set((db.schedules || []).map(s => s.id));
+  loadedBookingIds = new Set((db.bookings || []).map(b => b.id));
+  loadedUserIds = new Set((db.users || []).map(u => u.id));
 }
 
-// Function to save db state backup directly to Supabase table
-async function saveDbToSupabase(db: DbState): Promise<void> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !supabaseKey) return;
+// Distributed replication merge helper
+function mergeArrays<T extends { id: string }>(
+  local: T[],
+  remote: T[],
+  loadedIds: Set<string>
+): T[] {
+  const localMap = new Map((local || []).map(item => [item.id, item]));
+  const remoteMap = new Map((remote || []).map(item => [item.id, item]));
+  const resultMap = new Map<string, T>();
 
-  // Append this write to the global sequential queue
-  dbSaveQueue = dbSaveQueue.then(async () => {
-    try {
-      const supabase = getSupabase();
-      // Always use the latest in-memory copy if it exists, to prevent older states overriding new ones
-      const latestDb = memoryDb || db;
-      const serialized = JSON.stringify(latestDb);
-
-      const { error } = await supabase
-        .from('bot_sessions')
-        .upsert({
-          phone: 'STORED_DB_STATE',
-          patient_name: serialized,
-          current_state: 'SYSTEM',
-          last_interaction_at: getYemenTime().toISOString()
-        }, {
-          onConflict: 'phone'
-        });
-
-      if (error) {
-        console.warn('[SupabaseStorage] Error backing up state to Supabase:', error.message);
-      } else {
-        console.log('[SupabaseStorage] Successfully backed up database state to Supabase.');
-      }
-    } catch (err: any) {
-      console.warn('[SupabaseStorage] Exception encountered while saving DB to Supabase:', err);
+  // 1. Keep all items in local (updates, reads, or inserts of this node)
+  for (const [id, localItem] of localMap.entries()) {
+    const remoteItem = remoteMap.get(id);
+    if (remoteItem) {
+      resultMap.set(id, { ...remoteItem, ...localItem });
+    } else {
+      resultMap.set(id, localItem);
     }
-  });
+  }
 
-  return dbSaveQueue;
+  // 2. Resolve items in remote that do not exist locally
+  for (const [id, remoteItem] of remoteMap.entries()) {
+    if (!resultMap.has(id)) {
+      if (loadedIds.has(id)) {
+        // We loaded it previously, but now it's gone locally. This means the local node explicitly deleted it!
+        // Respect the deletion; do not restore.
+      } else {
+        // Brand new item added on another instance! Synchronize and keep it.
+        resultMap.set(id, remoteItem);
+      }
+    }
+  }
+
+  return Array.from(resultMap.values());
+}
+
+function mergeBotSessions(
+  local: Record<string, BotSession>,
+  remote: Record<string, BotSession>
+): Record<string, BotSession> {
+  const merged: Record<string, BotSession> = { ...(remote || {}) };
+
+  for (const [phone, localSession] of Object.entries(local || {})) {
+    const remoteSession = remote ? remote[phone] : null;
+    if (remoteSession) {
+      const localTime = new Date(localSession.last_interaction_at || 0).getTime();
+      const remoteTime = new Date(remoteSession.last_interaction_at || 0).getTime();
+      if (localTime >= remoteTime) {
+        merged[phone] = localSession;
+      } else {
+        merged[phone] = remoteSession;
+      }
+    } else {
+      merged[phone] = localSession;
+    }
+  }
+
+  return merged;
+}
+
+function mergeLogs(local: WhatsAppLog[], remote: WhatsAppLog[]): WhatsAppLog[] {
+  const logMap = new Map<string, WhatsAppLog>();
+  (remote || []).forEach(log => {
+    if (log.id) logMap.set(log.id, log);
+  });
+  (local || []).forEach(log => {
+    if (log.id) logMap.set(log.id, log);
+  });
+  return Array.from(logMap.values()).sort(
+    (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
+  );
+}
+
+// Low-latency Atomic Sync and merge logic
+async function syncDatabase(localChanges?: (db: DbState) => void): Promise<DbState> {
+  return new Promise((resolve, reject) => {
+    dbSaveQueue = dbSaveQueue.then(async () => {
+      try {
+        console.log('[DatabaseSync] Triggering real-time state synchronization cycle with Supabase remote...');
+        const remote = await loadDbFromSupabase();
+        
+        let currentLocal = memoryDb;
+        if (!currentLocal) {
+          if (fs.existsSync(DB_FILE)) {
+            try {
+              const data = fs.readFileSync(DB_FILE, 'utf-8');
+              currentLocal = ensureDbDefaults(JSON.parse(data));
+            } catch (e) {
+              currentLocal = ensureDbDefaults(null);
+            }
+          } else {
+            currentLocal = ensureDbDefaults(null);
+          }
+        }
+
+        if (localChanges) {
+          localChanges(currentLocal);
+        }
+
+        let merged = currentLocal;
+        if (remote) {
+          merged = {
+            doctors: mergeArrays(currentLocal.doctors || [], remote.doctors || [], loadedDoctorIds),
+            schedules: mergeArrays(currentLocal.schedules || [], remote.schedules || [], loadedScheduleIds),
+            bookings: mergeArrays(currentLocal.bookings || [], remote.bookings || [], loadedBookingIds),
+            users: mergeArrays(currentLocal.users || [], remote.users || [], loadedUserIds),
+            bot_sessions: mergeBotSessions(currentLocal.bot_sessions || {}, remote.bot_sessions || {}),
+            whatsapp_logs: mergeLogs(currentLocal.whatsapp_logs || [], remote.whatsapp_logs || []),
+            whatsapp_settings: {
+              id: 1,
+              webhook_verify_token: 'doctors_tower_verify_token_123',
+              access_token: '',
+              app_secret: '',
+              phone_number_id: '',
+              is_active: true,
+              ...(remote.whatsapp_settings || {}),
+              ...(currentLocal.whatsapp_settings || {})
+            } as WhatsAppSettings,
+            system_settings: {
+              id: 1,
+              receptionist_name_required: false,
+              admin_password: '123',
+              ...(remote.system_settings || {}),
+              ...(currentLocal.system_settings || {})
+            } as SystemSettings,
+          };
+          merged = ensureDbDefaults(merged);
+        }
+
+        memoryDb = merged;
+        trackLoadedIds(merged);
+        isDbHydrated = true;
+
+        // Perform async backup of filesystem
+        try {
+          if (!isVercel) {
+            fs.writeFileSync(DB_FILE, JSON.stringify(merged, null, 2), 'utf-8');
+          }
+        } catch (e) {
+          // Ignore
+        }
+
+        // Upload to Supabase atomically
+        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+        if (supabaseUrl && supabaseKey) {
+          const supabase = getSupabase();
+          const serialized = JSON.stringify(merged);
+          const { error } = await supabase
+            .from('bot_sessions')
+            .upsert({
+              phone: 'STORED_DB_STATE',
+              patient_name: serialized,
+              current_state: 'SYSTEM',
+              last_interaction_at: getYemenTime().toISOString()
+            }, {
+              onConflict: 'phone'
+            });
+
+          if (error) {
+            console.warn('[DatabaseSync] Remote upload warning:', error.message);
+          } else {
+            console.log('[DatabaseSync] Atomic database merge and sync with Supabase completed successfully!');
+          }
+        }
+        resolve(merged);
+      } catch (err) {
+        console.error('[DatabaseSync] Sync execution failed:', err);
+        reject(err);
+      }
+    });
+  });
+}
+
+let lastSyncTime = 0;
+const SYNC_COOLDOWN_MS = 3000; // 3 seconds cooldown to reconcile state across multiple servers
+
+function ensureDbHydrated(): Promise<void> {
+  const now = Date.now();
+  if (isDbHydrated && memoryDb && (now - lastSyncTime < SYNC_COOLDOWN_MS)) {
+    return Promise.resolve();
+  }
+  return syncDatabase().then(() => {
+    lastSyncTime = Date.now();
+  });
 }
 
 // Ensure data directory exists if not on Vercel
@@ -398,15 +521,12 @@ function writeDb(db: DbState) {
     console.warn('Fs write db state skipped:', err.message);
   }
 
-  // Trigger outbound backup sync and chain the promise so we can wait for completion before completing the HTTP request
-  currentSavePromise = (async () => {
-    try {
-      await ensureDbHydrated();
-      await saveDbToSupabase(db);
-    } catch (err) {
-      console.warn('[SupabaseStorage] Async state backup failed inside chain:', err);
-    }
-  })();
+  // Trigger atomic distribution lock sync cycle
+  currentSavePromise = syncDatabase().then(() => {
+    console.log('[writeDb] Real-time state replication cycle finalized.');
+  }).catch(err => {
+    console.error('[writeDb] Real-time state replication failed:', err);
+  });
 }
 
 // -------------------------------------------------------------------------

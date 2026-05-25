@@ -16,10 +16,37 @@ import AccessSettingsTab from './components/AccessSettingsTab';
 import { ShieldCheck, UserCheck, Stethoscope, BookOpen, Clock, PhoneCall, HelpCircle, LogOut } from 'lucide-react';
 
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [role, setRole] = useState<'admin' | 'receptionist'>('admin');
-  const [receptionistName, setReceptionistName] = useState<string | null>(null);
-  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(() => {
+    try {
+      return localStorage.getItem('isLoggedIn') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const [role, setRole] = useState<'admin' | 'receptionist'>(() => {
+    try {
+      return (localStorage.getItem('role') as 'admin' | 'receptionist') || 'admin';
+    } catch {
+      return 'admin';
+    }
+  });
+
+  const [receptionistName, setReceptionistName] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('receptionistName');
+    } catch {
+      return null;
+    }
+  });
+
+  const [authToken, setAuthToken] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('authToken');
+    } catch {
+      return null;
+    }
+  });
 
   // Core database state arrays
   const [doctors, setDoctors] = useState<Doctor[]>([]);
@@ -63,6 +90,19 @@ export default function App() {
   }, [isLoggedIn]);
 
   const handleLoginSuccess = (userRole: 'admin' | 'receptionist', token: string, name: string | null) => {
+    try {
+      localStorage.setItem('isLoggedIn', 'true');
+      localStorage.setItem('role', userRole);
+      localStorage.setItem('authToken', token);
+      if (name) {
+        localStorage.setItem('receptionistName', name);
+      } else {
+        localStorage.removeItem('receptionistName');
+      }
+    } catch (e) {
+      console.warn('LocalStorage access failed:', e);
+    }
+
     setRole(userRole);
     setAuthToken(token);
     setReceptionistName(name);
@@ -74,6 +114,15 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    try {
+      localStorage.removeItem('isLoggedIn');
+      localStorage.removeItem('role');
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('receptionistName');
+    } catch (e) {
+      console.warn('LocalStorage access failed:', e);
+    }
+
     setIsLoggedIn(false);
     setAuthToken(null);
     setRole('admin');
