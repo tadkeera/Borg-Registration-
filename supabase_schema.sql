@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS public.bookings (
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'cancelled')),
     payment_status TEXT NOT NULL DEFAULT 'pending' CHECK (payment_status IN ('pending', 'paid', 'cancelled')),
     verified_by_whatsapp BOOLEAN DEFAULT false,
+    shift TEXT DEFAULT 'Morning',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -123,10 +124,12 @@ BEGIN
         RAISE EXCEPTION 'عذراً، لا يوجد سعة متوفرة للحجز في هذا الموعد.';
     END IF;
 
-    -- 3. Get next sequence group queue number for this doctor on this day
+    -- 3. Get next sequence group queue number for this doctor on this day and shift
     SELECT COALESCE(MAX(queue_number), 0) + 1 INTO next_q
     FROM public.bookings
-    WHERE doctor_id = NEW.doctor_id AND booking_date = NEW.booking_date;
+    WHERE doctor_id = NEW.doctor_id 
+      AND booking_date = NEW.booking_date 
+      AND COALESCE(shift, 'Morning') = COALESCE(NEW.shift, 'Morning');
 
     -- Assign to the new record
     NEW.queue_number := next_q;
