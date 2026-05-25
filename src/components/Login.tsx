@@ -4,7 +4,6 @@
  */
 
 import React, { useState } from 'react';
-import { HOSPITAL_LOGO } from '../utils/constants';
 import { Shield, User, Loader2, Key } from 'lucide-react';
 
 interface LoginProps {
@@ -60,9 +59,9 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         <div className="flex justify-center">
           <img
             id="login-logo"
-            src={HOSPITAL_LOGO}
+            src="/logo.png"
             alt="شعار مستشفى برج الأطباء"
-            className="h-28 w-28 object-contain drop-shadow-md rounded-full bg-white p-2 border border-slate-100"
+            className="hospital-logo"
             referrerPolicy="no-referrer"
           />
         </div>
@@ -70,7 +69,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           نظام إدارة التسجيل والعيادات
         </h2>
         <p id="login-sub" className="mt-2 text-center text-sm text-slate-500">
-          مستشفى برج الأطباء التخصصي
+          مستشفى برج الأطباء
         </p>
       </div>
 
@@ -157,7 +156,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
                   جاري التحقق...
                 </>
               ) : (
-                'ولوج لوحة الإدارة 🔓'
+                'تسجيل الدخول'
               )}
             </button>
           </form>

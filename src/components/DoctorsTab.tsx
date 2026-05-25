@@ -140,7 +140,7 @@ export default function DoctorsTab({ doctors, role, onAddDoctor, onEditDoctor, o
       <div id="doctors-list-panel" className="bg-white border border-slate-100 rounded-2xl shadow-sm overflow-hidden">
         <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/40">
           <h3 className="text-xs font-black text-slate-800">أعضاء الكادر الطبي النشط ({doctors.length})</h3>
-          <span className="text-[10px] bg-slate-100 px-2 py-0.5 text-slate-500 rounded font-bold">برج الأطباء التخصصي</span>
+          <span className="text-[10px] bg-slate-100 px-2 py-0.5 text-slate-500 rounded font-bold">برج الأطباء</span>
         </div>
 
         <div className="overflow-x-auto">

@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { User, Shield, UserCheck, Key, Loader2, Trash2, Plus, Users } from 'lucide-react';
+import { User, Shield, UserCheck, Key, Loader2, Trash2, Plus, Users, Edit3 } from 'lucide-react';
 
 interface AccessSettingsTabProps {
   currentUserRole: 'admin' | 'receptionist';
@@ -25,6 +25,8 @@ export default function AccessSettingsTab({ currentUserRole }: AccessSettingsTab
   const [employeeName, setEmployeeName] = useState('');
   const [role, setRole] = useState<'admin' | 'receptionist'>('receptionist');
   
+  const [editingUser, setEditingUser] = useState<DBUser | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [listLoading, setListLoading] = useState(true);
   const [error, setError] = useState('');
@@ -80,10 +82,34 @@ export default function AccessSettingsTab({ currentUserRole }: AccessSettingsTab
     fetchUsers();
   }, []);
 
+  const handleStartEdit = (user: DBUser) => {
+    setEditingUser(user);
+    setUsername(user.username);
+    setEmployeeName(user.employee_name || user.username);
+    setRole(user.role);
+    setPassword('');
+    setError('');
+    setSuccess('');
+  };
+
+  const handleCancelEdit = () => {
+    setEditingUser(null);
+    setUsername('');
+    setEmployeeName('');
+    setRole('receptionist');
+    setPassword('');
+    setError('');
+    setSuccess('');
+  };
+
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password.trim() || !employeeName.trim()) {
-      setError('الرجاء تعبئة اسم المستخدم، كلمة المرور، واسم الموظف بالكامل.');
+    if (!username.trim() || !employeeName.trim()) {
+      setError('الرجاء تعبئة اسم المستخدم واسم الموظف بالكامل.');
+      return;
+    }
+    if (!editingUser && !password.trim()) {
+      setError('الرجاء تعبئة كلمة المرور الخاصة بالحساب الجديد.');
       return;
     }
 
@@ -92,27 +118,37 @@ export default function AccessSettingsTab({ currentUserRole }: AccessSettingsTab
     setSuccess('');
 
     try {
-      const res = await fetch('/api/users', {
-        method: 'POST',
+      const isEditing = editingUser !== null;
+      const url = isEditing ? `/api/users/${editingUser.id}` : '/api/users';
+      const method = isEditing ? 'PUT' : 'POST';
+
+      const payload: any = {
+        username: username.trim(),
+        role,
+        employee_name: employeeName.trim()
+      };
+
+      if (password.trim() !== '') {
+        payload.password = password.trim();
+      }
+
+      const res = await fetch(url, {
+        method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: username.trim(),
-          password: password.trim(),
-          role,
-          employee_name: employeeName.trim()
-        })
+        body: JSON.stringify(payload)
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'فشل إضافة المستخدم الجديد.');
+        throw new Error(data.error || (isEditing ? 'فشل تعديل الحساب.' : 'فشل إضافة المستخدم الجديد.'));
       }
 
-      setSuccess('تم تسجيل حساب المستخدم الجديد بنجاح! ✨');
+      setSuccess(isEditing ? 'تم تعديل بيانات حساب المستخدم بنجاح! ✨' : 'تم تسجيل حساب المستخدم الجديد بنجاح! ✨');
       setUsername('');
       setPassword('');
       setEmployeeName('');
       setRole('receptionist');
+      setEditingUser(null);
       fetchUsers();
     } catch (err: any) {
       setError(err.message || 'حدث خطأ غير متوقع.');
@@ -190,8 +226,17 @@ export default function AccessSettingsTab({ currentUserRole }: AccessSettingsTab
         {/* Creation Form Card */}
         <div className="lg:col-span-5 bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
           <h3 className="text-sm font-black text-slate-800 flex items-center gap-1.5 border-b border-slate-100 pb-3">
-            <Plus className="h-4 w-4 text-emerald-600" />
-            إنشاء مستخدم جديد
+            {editingUser ? (
+              <>
+                <Edit3 className="h-4 w-4 text-amber-600" />
+                تعديل الحساب: @{editingUser.username}
+              </>
+            ) : (
+              <>
+                <Plus className="h-4 w-4 text-emerald-600" />
+                انشاء مستخدم جديد
+              </>
+            )}
           </h3>
 
           <form onSubmit={handleAddUser} className="space-y-4">
@@ -205,7 +250,7 @@ export default function AccessSettingsTab({ currentUserRole }: AccessSettingsTab
                 value={employeeName}
                 onChange={(e) => setEmployeeName(e.target.value)}
                 className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                placeholder="أدخل الاسم الرباعي أو الثلاثي للموظف"
+                placeholder="أدخل الاسم للموظف"
                 disabled={loading}
               />
             </div>
@@ -227,15 +272,15 @@ export default function AccessSettingsTab({ currentUserRole }: AccessSettingsTab
 
             <div>
               <label className="block text-xs font-bold text-slate-600 mb-1.5">
-                كلمة المرور (Password)
+                كلمة المرور (Password) {editingUser && <span className="text-amber-600 font-normal">(اختياري)</span>}
               </label>
               <input
                 type="password"
-                required
+                required={!editingUser}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                placeholder="أدخل كلمة المرور السرية"
+                placeholder={editingUser ? "اتركه فارغاً للاحتفاظ بكلمة المرور الحالية" : "أدخل كلمة المرور السرية"}
                 disabled={loading}
               />
             </div>
@@ -255,20 +300,46 @@ export default function AccessSettingsTab({ currentUserRole }: AccessSettingsTab
               </select>
             </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full flex justify-center items-center py-2.5 px-4 border border-transparent rounded-xl shadow text-xs font-black text-white bg-blue-700 hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all disabled:opacity-50"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="animate-spin h-4 w-4 ml-1.5" />
-                  جاري الإنشاء...
-                </>
-              ) : (
-                'حقن الحساب الجديد للعيادات 💾'
-              )}
-            </button>
+            {editingUser ? (
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full flex justify-center items-center py-2.5 px-4 rounded-xl text-xs font-black text-white bg-amber-600 hover:bg-amber-700 focus:outline-none transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="animate-spin h-4 w-4 ml-1.5" />
+                      جاري الحفظ...
+                    </>
+                  ) : (
+                    'تعديل الحساب 💾'
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="w-full flex justify-center items-center py-2.5 px-2.5 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 focus:outline-none transition-all"
+                >
+                  إلغاء
+                </button>
+              </div>
+            ) : (
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full flex justify-center items-center py-2.5 px-4 border border-transparent rounded-xl shadow text-xs font-black text-white bg-blue-700 hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all disabled:opacity-50 cursor-pointer"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="animate-spin h-4 w-4 ml-1.5" />
+                    جاري الإنشاء...
+                  </>
+                ) : (
+                  'اضافة مستخدم جديد 💾'
+                )}
+              </button>
+            )}
           </form>
 
           <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 space-y-1.5">
@@ -310,7 +381,7 @@ export default function AccessSettingsTab({ currentUserRole }: AccessSettingsTab
                   {users.map((u) => (
                     <tr key={u.id} className="hover:bg-slate-50/50 transition-colors text-xs">
                       <td className="px-3 py-3 font-bold text-slate-800">
-                        <div className="font-sans font-black text-slate-800">{u.employee_name || u.username}</div>
+                        <div className="font-sans font-black text-slate-805">{u.employee_name || u.username}</div>
                         <div className="text-[10px] font-mono text-slate-400">@{u.username}</div>
                       </td>
                       <td className="px-3 py-3 text-center">
@@ -323,14 +394,24 @@ export default function AccessSettingsTab({ currentUserRole }: AccessSettingsTab
                         </span>
                       </td>
                       <td className="px-3 py-3 text-left">
-                        <button
-                          onClick={() => handleDeleteUser(u.id)}
-                          className="p-1 px-2.5 text-red-600 hover:bg-red-50 rounded-lg border border-red-100 transition-colors text-[10px] font-bold flex items-center justify-center gap-1/2 cursor-pointer inline-flex"
-                          title="حذف المستخدم"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                          حذف
-                        </button>
+                        <div className="flex items-center gap-1.5 justify-end">
+                          <button
+                            onClick={() => handleStartEdit(u)}
+                            className="p-1 px-2 text-amber-600 hover:bg-amber-50 rounded-lg border border-amber-150 transition-colors text-[10px] font-bold flex items-center justify-center gap-1 cursor-pointer inline-flex"
+                            title="تعديل المستخدم"
+                          >
+                            <Edit3 className="h-3 w-3" />
+                            تعديل
+                          </button>
+                          <button
+                            onClick={() => handleDeleteUser(u.id)}
+                            className="p-1 px-2 text-red-600 hover:bg-red-50 rounded-lg border border-red-100 transition-colors text-[10px] font-bold flex items-center justify-center gap-1 cursor-pointer inline-flex"
+                            title="حذف المستخدم"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                            حذف
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

@@ -6,3 +6,18 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+@utility hospital-logo {
+  width: 140px;
+  max-width: 100%;
+  height: auto !important;
+  object-fit: contain;
+}
+
+.hospital-logo {
+  width: 140px;
+  max-width: 100%;
+  height: auto !important;
+  object-fit: contain;
+}
+
+

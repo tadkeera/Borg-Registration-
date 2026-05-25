@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { HOSPITAL_LOGO } from './utils/constants';
 import { Doctor, Schedule, Booking } from './types';
 import Login from './components/Login';
 import DoctorsTab from './components/DoctorsTab';
@@ -269,9 +268,10 @@ export default function App() {
         <div className="flex items-center space-x-3 space-x-reverse">
           <img
             id="brand-logo"
-            src={HOSPITAL_LOGO}
+            src="/logo.png"
             alt="شعار مستشفى برج الأطباء"
-            className="h-14 w-14 object-contain"
+            className="hospital-logo"
+            style={{ width: '56px' }}
             referrerPolicy="no-referrer"
           />
           <div>
@@ -498,7 +498,7 @@ export default function App() {
 
       {/* FOOTER */}
       <footer id="app-footer" className="bg-white border-t border-slate-100 py-4 px-4 text-center text-[10px] md:text-xs text-slate-400">
-        نظام إدارة وحجوزات مستشفى برج الأطباء التخصصي - جميع الحقوق محفوظة © 2026. بتوقيت اليمن (Asia/Aden, UTC+3).
+        نظام إدارة وحجوزات مستشفى برج الأطباء - جميع الحقوق محفوظة © 2026. بتوقيت اليمن (Asia/Aden, UTC+3).
       </footer>
     </div>
   );

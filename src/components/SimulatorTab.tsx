@@ -50,7 +50,7 @@ export default function SimulatorTab({ onSendMessageCallback }: SimulatorTabProp
       {
         id: '1',
         sender: 'bot',
-        text: 'مرحباً بك في مُحاكي واتساب مستشفى برج الأطباء التخصصي! 🏥\nيمكنك البدء في الحجز عن طريق إرسال كلمة "تسجيل" أو الرقم "1".',
+        text: 'مرحباً بك في مُحاكي واتساب مستشفى برج الأطباء! 🏥\nيمكنك البدء في الحجز عن طريق إرسال كلمة "تسجيل" أو الرقم "1".',
         timestamp: new Date().toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' })
       }
     ]);

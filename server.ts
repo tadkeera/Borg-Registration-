@@ -360,6 +360,55 @@ app.delete('/api/users/:id', async (req, res) => {
   }
 });
 
+app.put('/api/users/:id', async (req, res) => {
+  const { id } = req.params;
+  const { username, password, role, employee_name } = req.body;
+  try {
+    const supabase = getSupabase();
+    
+    const { data: userToUpdate, error: fetchErr } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (fetchErr || !userToUpdate) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
+
+    if (username && username.trim().toLowerCase() !== userToUpdate.username.toLowerCase()) {
+      const { data: exists } = await supabase
+        .from('users')
+        .select('id')
+        .eq('username', username.trim().toLowerCase())
+        .maybeSingle();
+
+      if (exists) {
+        return res.status(400).json({ error: 'اسم المستخدم هذا مسجل مسبقاً.' });
+      }
+    }
+
+    const updatedFields: any = {};
+    if (username !== undefined) updatedFields.username = username.trim();
+    if (password !== undefined && password.trim() !== '') updatedFields.password = password.trim();
+    if (role !== undefined) updatedFields.role = role;
+    if (employee_name !== undefined) updatedFields.employee_name = employee_name.trim();
+
+    const { data, error } = await supabase
+      .from('users')
+      .update(updatedFields)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err: any) {
+    console.error('Update user error:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to update user' });
+  }
+});
+
 // 2. DOCTORS ENDPOINTS (CRUD)
 app.get('/api/doctors', async (req, res) => {
   try {
