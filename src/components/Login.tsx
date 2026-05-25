@@ -62,6 +62,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             src="/logo.png"
             alt="شعار مستشفى برج الأطباء"
             className="hospital-logo"
+            style={{ width: '140px', height: 'auto', objectFit: 'contain' }}
             referrerPolicy="no-referrer"
           />
         </div>

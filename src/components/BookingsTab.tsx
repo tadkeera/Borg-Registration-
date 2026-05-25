@@ -728,6 +728,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                   src="/logo.png"
                   alt="Logo"
                   className="hospital-logo"
+                  style={{ width: '80px', height: 'auto', objectFit: 'contain' }}
                   referrerPolicy="no-referrer"
                 />
               </div>

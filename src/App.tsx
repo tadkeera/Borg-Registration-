@@ -271,7 +271,7 @@ export default function App() {
             src="/logo.png"
             alt="شعار مستشفى برج الأطباء"
             className="hospital-logo"
-            style={{ width: '56px' }}
+            style={{ width: '56px', height: 'auto', objectFit: 'contain' }}
             referrerPolicy="no-referrer"
           />
           <div>
