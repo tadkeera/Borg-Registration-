@@ -1014,6 +1014,12 @@ app.get('/api/webhook/whatsapp', async (req, res) => {
  */
 app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
   try {
+    // Ignore status updates immediately (e.g. sent/delivered/read receipts)
+    if (req.body?.entry?.[0]?.changes?.[0]?.value?.statuses) {
+      console.log('[WhatsApp Webhook] Ignoring status webhook (sent, delivered, or read receipt).');
+      return res.status(200).json({ success: true });
+    }
+
     const supabase = getSupabase();
     const { data: settings } = await supabase
       .from('whatsapp_settings')
@@ -1044,9 +1050,10 @@ app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
 
     if (messageObj) {
       const fromPhone = messageObj.from; // e.g., '96777123456'
+      const cleanPhone = normalizePhone(fromPhone);
       
       // Core Bot state processing logic
-      const botResponse = await handleWhatsappFlow(fromPhone, messageObj);
+      const botResponse = await handleWhatsappFlow(cleanPhone, messageObj);
       
       // Attempt dispatch via real Meta WhatsApp API if credentials are ready
       const accessToken = settings?.access_token || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
@@ -1054,13 +1061,13 @@ app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
       const isWebhookActive = settings ? settings.is_active !== false : true;
 
       if (isWebhookActive && accessToken && phoneNumberId) {
-        console.log(`[WhatsApp Webhook] Dispatching active API call for [+${fromPhone}] via Graph API...`);
-        await sendWhatsAppMessage(fromPhone, botResponse, {
+        console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Graph API...`);
+        await sendWhatsAppMessage(cleanPhone, botResponse, {
           access_token: accessToken,
           phone_number_id: phoneNumberId
         });
       } else {
-        console.log(`[WhatsApp Webhook Simulated] Replayed [+${fromPhone}]: "${botResponse}" (Real API skipped: active=${isWebhookActive}, token=${!!accessToken}, phone=${!!phoneNumberId})`);
+        console.log(`[WhatsApp Webhook Simulated] Replayed [+${cleanPhone}]: "${botResponse}" (Real API skipped: active=${isWebhookActive}, token=${!!accessToken}, phone=${!!phoneNumberId})`);
       }
     }
 
@@ -1075,6 +1082,11 @@ app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
 // -------------------------------------------------------------------------
 // REUSABLE STATE MACHINE FLOW LOGIC
 // -------------------------------------------------------------------------
+function normalizePhone(phone: string): string {
+  if (!phone) return '';
+  return phone.replace(/^\+/, '').replace(/\s+/g, '').trim();
+}
+
 function getNextWeekDate(targetDayOfWeekIndex: number): string {
   const thisWeek = getTargetDate(targetDayOfWeekIndex);
   const date = new Date(thisWeek);
@@ -1187,12 +1199,14 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
   const supabase = getSupabase();
   const currentYemenNow = getYemenTime();
   
+  const cleanPhone = normalizePhone(phone);
+  
   // Log inbound message
   const isTextMessage = messageObj.type === 'text';
   let messageText = isTextMessage ? (messageObj.text?.body || '').trim() : '';
 
   await supabase.from('whatsapp_logs').insert([{
-    phone,
+    phone: cleanPhone,
     direction: 'in',
     message: isTextMessage ? messageText : `[رسالة وسائط متعددة أو غير مدعومة: ${messageObj.type}]`,
     timestamp: currentYemenNow.toISOString()
@@ -1202,7 +1216,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
   const { data: dbSession } = await supabase
     .from('bot_sessions')
     .select('*')
-    .eq('phone', phone)
+    .eq('phone', cleanPhone)
     .maybeSingle();
 
   let session = dbSession;
@@ -1210,7 +1224,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
 
   if (isNewSession) {
     session = {
-      phone,
+      phone: cleanPhone,
       current_state: 'IDLE',
       patient_name: null,
       selected_doctor_id: null,
@@ -1225,7 +1239,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
   const outputReply = async (replyMessage: string, nextState: string) => {
     // Record log out
     await supabase.from('whatsapp_logs').insert([{
-      phone,
+      phone: cleanPhone,
       direction: 'out',
       message: replyMessage,
       timestamp: getYemenTime().toISOString()
@@ -1241,7 +1255,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
     if (isNewSession) {
       await supabase.from('bot_sessions').insert([nextSession]);
     } else {
-      await supabase.from('bot_sessions').update(nextSession).eq('phone', phone);
+      await supabase.from('bot_sessions').update(nextSession).eq('phone', cleanPhone);
     }
 
     return replyMessage;
@@ -1415,7 +1429,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
           .from('bookings')
           .select('*', { count: 'exact', head: true })
           .eq('doctor_id', doctor.id)
-          .eq('patient_phone', phone)
+          .eq('patient_phone', cleanPhone)
           .neq('status', 'cancelled');
 
         if ((patientBookingsCount || 0) >= 2) {
@@ -1424,7 +1438,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
           session.selected_shift = null;
           session.selected_schedule_id = null;
           session.selected_date = null;
-          await supabase.from('bot_sessions').delete().eq('phone', phone);
+          await supabase.from('bot_sessions').delete().eq('phone', cleanPhone);
           return outputReply(
             "عذراً، لقد تم الوصول إلى الحد الأقصى للتسجيل (مريضين كحد أقصى) لهذا الطبيب من رقم هذا الهاتف.",
             'IDLE'
@@ -1465,7 +1479,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
     
     if (!matchedOption) {
       session.current_state = 'IDLE';
-      await supabase.from('bot_sessions').delete().eq('phone', phone);
+      await supabase.from('bot_sessions').delete().eq('phone', cleanPhone);
       return outputReply("عذراً، حدث خطأ ما في الجلسة. يرجى إرسال كلمة 'تسجيل' للبدء من جديد.", 'IDLE');
     }
 
@@ -1502,7 +1516,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
         .from('bookings')
         .select('*', { count: 'exact', head: true })
         .eq('doctor_id', doctor.id)
-        .eq('patient_phone', phone)
+        .eq('patient_phone', cleanPhone)
         .neq('status', 'cancelled');
 
       if ((patientBookingsCount || 0) >= 2) {
@@ -1511,7 +1525,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
         session.selected_shift = null;
         session.selected_schedule_id = null;
         session.selected_date = null;
-        await supabase.from('bot_sessions').delete().eq('phone', phone);
+        await supabase.from('bot_sessions').delete().eq('phone', cleanPhone);
         return outputReply(
           "عذراً، لقد تم الوصول إلى الحد الأقصى للتسجيل (مريضين كحد أقصى) لهذا الطبيب من رقم هذا الهاتف.",
           'IDLE'
@@ -1562,7 +1576,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
         doctor_id: doctorId,
         schedule_id: schedule.id,
         patient_name: nameInput,
-        patient_phone: phone,
+        patient_phone: cleanPhone,
         booking_date: dateStr,
         queue_number: 0, // Assigned by PG Trigger
         status: 'pending',
@@ -1608,7 +1622,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
     await supabase
       .from('bot_sessions')
       .delete()
-      .eq('phone', phone);
+      .eq('phone', cleanPhone);
 
     return outputReply(successMsg, 'IDLE');
   }
@@ -1625,25 +1639,27 @@ app.post('/api/simulator/send-message', async (req, res) => {
     return res.status(400).json({ error: 'الحقول المطلوبة مفقودة' });
   }
 
+  const cleanPhone = normalizePhone(phone);
+
   const mockMetaMsg = {
     type: 'text',
-    from: phone,
+    from: cleanPhone,
     text: { body: message }
   };
 
   try {
-    const responseText = await handleWhatsappFlow(phone, mockMetaMsg);
+    const responseText = await handleWhatsappFlow(cleanPhone, mockMetaMsg);
     
     // Fetch current state
     const supabase = getSupabase();
     const { data: session } = await supabase
       .from('bot_sessions')
       .select('*')
-      .eq('phone', phone)
+      .eq('phone', cleanPhone)
       .maybeSingle();
 
     res.json({
-      phone,
+      phone: cleanPhone,
       sentMessage: message,
       receivedReply: responseText,
       currentSessionState: session ? session.current_state : 'IDLE',
