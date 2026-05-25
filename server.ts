@@ -753,45 +753,41 @@ app.delete('/api/bookings/:id', async (req, res) => {
   }
 });
 
-// 5. WHATSAPP SETTINGS ENDPOINTS
+// 5. WHATSAPP SETTINGS ENDPOINTS (Multi-number Config)
 app.get('/api/whatsapp-settings', async (req, res) => {
   try {
     const supabase = getSupabase();
-    const { data, error } = await supabase
+    const { data: list, error } = await supabase
       .from('whatsapp_settings')
       .select('*')
-      .eq('id', 1)
-      .maybeSingle();
+      .order('created_at', { ascending: true });
 
     if (error) throw error;
-    res.json(data || {
-      id: 1,
-      webhook_verify_token: 'doctors_tower_verify_token_123',
-      access_token: '',
-      app_secret: '',
-      phone_number_id: '',
-      is_active: true
-    });
+    res.json(list || []);
   } catch (err: any) {
     console.error('Fetch whatsapp settings error:', err.message);
-    res.status(500).json({ error: 'Failed to fetch settings' });
+    res.status(500).json({ error: 'Failed to fetch settings list' });
   }
 });
 
 app.post('/api/whatsapp-settings', async (req, res) => {
-  const { webhook_verify_token, access_token, app_secret, phone_number_id, is_active } = req.body;
+  const { id, webhook_verify_token, access_token, app_secret, phone_number_id, is_active } = req.body;
   try {
     const supabase = getSupabase();
+    const record: any = {
+      webhook_verify_token: webhook_verify_token || 'doctors_tower_verify_token_123',
+      access_token: access_token || '',
+      app_secret: app_secret || '',
+      phone_number_id: phone_number_id || '',
+      is_active: is_active !== undefined ? is_active : true
+    };
+    if (id) {
+      record.id = id;
+    }
+
     const { data, error } = await supabase
       .from('whatsapp_settings')
-      .upsert({
-        id: 1,
-        webhook_verify_token,
-        access_token,
-        app_secret,
-        phone_number_id,
-        is_active
-      })
+      .upsert(record)
       .select()
       .single();
 
@@ -799,7 +795,24 @@ app.post('/api/whatsapp-settings', async (req, res) => {
     res.json(data);
   } catch (err: any) {
     console.error('Update whatsapp settings error:', err.message);
-    res.status(500).json({ error: 'Failed to update settings' });
+    res.status(500).json({ error: err.message || 'Failed to update settings' });
+  }
+});
+
+app.delete('/api/whatsapp-settings/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const supabase = getSupabase();
+    const { error } = await supabase
+      .from('whatsapp_settings')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+    res.json({ success: true, message: 'تم حذف رقم ربط البوت بنجاح' });
+  } catch (err: any) {
+    console.error('Delete whatsapp settings error:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to delete settings' });
   }
 });
 
@@ -999,24 +1012,26 @@ async function sendWhatsAppMessage(to: string, text: string, settings: { access_
 app.get('/api/webhook/whatsapp', async (req, res) => {
   try {
     const supabase = getSupabase();
-    const { data: settings } = await supabase
-      .from('whatsapp_settings')
-      .select('*')
-      .eq('id', 1)
-      .maybeSingle();
-
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
 
-    const expectedToken = settings?.webhook_verify_token || process.env.WHATSAPP_VERIFY_TOKEN || 'doctors_tower_verify_token_123';
-
     if (mode && token) {
-      if (mode === 'subscribe' && token === expectedToken) {
-        console.log('WhatsApp Webhook Verified Successfully!');
-        return res.status(200).send(challenge);
-      } else {
-        return res.status(403).send('Forbidden: Invalid Verify Token');
+      if (mode === 'subscribe') {
+        const { data: matchedRows } = await supabase
+          .from('whatsapp_settings')
+          .select('*')
+          .eq('webhook_verify_token', token);
+
+        const envVerifyToken = process.env.WHATSAPP_VERIFY_TOKEN || 'doctors_tower_verify_token_123';
+        const isMatched = (matchedRows && matchedRows.length > 0) || token === envVerifyToken;
+
+        if (isMatched) {
+          console.log('WhatsApp Webhook Verified Successfully!');
+          return res.status(200).send(challenge);
+        } else {
+          return res.status(403).send('Forbidden: Invalid Verify Token');
+        }
       }
     }
     return res.status(400).send('Bad Request');
@@ -1038,11 +1053,35 @@ app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
     }
 
     const supabase = getSupabase();
-    const { data: settings } = await supabase
-      .from('whatsapp_settings')
-      .select('*')
-      .eq('id', 1)
-      .maybeSingle();
+    
+    // Parse Meta WhatsApp Cloud API body message
+    const entry = req.body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+    const messageObj = value?.messages?.[0];
+    const recipientPhoneId = value?.metadata?.phone_number_id;
+
+    // Load matching WhatsApp configuration dynamically based on phone_number_id
+    let settings = null;
+    if (recipientPhoneId) {
+      const { data } = await supabase
+        .from('whatsapp_settings')
+        .select('*')
+        .eq('phone_number_id', recipientPhoneId)
+        .maybeSingle();
+      settings = data;
+    }
+
+    if (!settings) {
+      // Fallback: try to grab the first configuration from the table if none match specifically
+      const { data } = await supabase
+        .from('whatsapp_settings')
+        .select('*')
+        .limit(1);
+      if (data && data.length > 0) {
+        settings = data[0];
+      }
+    }
 
     const signature = req.headers['x-hub-signature-256'] as string;
     const appSecret = settings?.app_secret || process.env.META_APP_SECRET;
@@ -1059,12 +1098,6 @@ app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
       }
     }
 
-    // Parse Meta WhatsApp Cloud API body message
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-    const messageObj = value?.messages?.[0];
-
     if (messageObj) {
       const fromPhone = messageObj.from; // e.g., '96777123456'
       const cleanPhone = normalizePhone(fromPhone);
@@ -1074,11 +1107,11 @@ app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
       
       // Attempt dispatch via real Meta WhatsApp API if credentials are ready
       const accessToken = settings?.access_token || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
-      const phoneNumberId = settings?.phone_number_id || process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.META_PHONE_NUMBER_ID;
+      const phoneNumberId = settings?.phone_number_id || recipientPhoneId || process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.META_PHONE_NUMBER_ID;
       const isWebhookActive = settings ? settings.is_active !== false : true;
 
       if (isWebhookActive && accessToken && phoneNumberId) {
-        console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Graph API...`);
+        console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Graph API using Phone ID [${phoneNumberId}]...`);
         await sendWhatsAppMessage(cleanPhone, botResponse, {
           access_token: accessToken,
           phone_number_id: phoneNumberId

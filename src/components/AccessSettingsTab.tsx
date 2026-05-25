@@ -30,6 +30,37 @@ export default function AccessSettingsTab({ currentUserRole }: AccessSettingsTab
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
+  // Password fields
+  const [newPassword, setNewPassword] = useState('');
+  const [pwdLoading, setPwdLoading] = useState(false);
+  const [pwdError, setPwdError] = useState('');
+  const [pwdSuccess, setPwdSuccess] = useState('');
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPassword.trim()) return;
+
+    setPwdLoading(true);
+    setPwdError('');
+    setPwdSuccess('');
+
+    try {
+      const res = await fetch('/api/system-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ admin_password: newPassword.trim() })
+      });
+
+      if (!res.ok) throw new Error('فشل تعديل كلمة المرور.');
+      setPwdSuccess('تم تغيير كلمة مرور مدير النظام بنجاح! 🔑');
+      setNewPassword('');
+    } catch (err: any) {
+      setPwdError(err.message || 'فشل تغيير كلمة المرور.');
+    } finally {
+      setPwdLoading(false);
+    }
+  };
+
   const fetchUsers = async () => {
     setListLoading(true);
     try {
@@ -308,6 +339,55 @@ export default function AccessSettingsTab({ currentUserRole }: AccessSettingsTab
             </div>
           )}
         </div>
+      </div>
+
+      {/* Change Password Card */}
+      <div id="settings-pwd-card" className="bg-white p-5 border border-slate-100 rounded-2xl shadow-sm space-y-4">
+        <h3 className="text-sm font-black text-slate-800 flex items-center border-b border-slate-100 pb-3">
+          <Key className="h-4.5 w-4.5 text-blue-600 ml-1.5" />
+          تعديل كلمة مرور الإدارة لمدير النظام
+        </h3>
+
+        {pwdError && (
+          <p className="p-2 text-xs bg-red-50 text-red-600 rounded-xl border border-red-100 font-bold">
+            {pwdError}
+          </p>
+        )}
+        {pwdSuccess && (
+          <p className="p-2 text-xs bg-emerald-50 text-emerald-700 rounded-xl border border-emerald-100 font-bold">
+            {pwdSuccess}
+          </p>
+        )}
+
+        <form onSubmit={handleChangePassword} className="space-y-4 max-w-xl">
+          <div>
+            <label className="block text-xs font-bold text-slate-600 mb-1.5">كلمة المرور الجديدة لمدير النظام</label>
+            <input
+              type="password"
+              required
+              placeholder="اكتب كلمة مرور الإدارة الجديدة"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
+              disabled={pwdLoading}
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={pwdLoading}
+            className="w-auto flex justify-center items-center py-2.5 px-6 bg-slate-800 text-white font-black text-xs rounded-xl shadow hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 transition-all disabled:opacity-50 cursor-pointer"
+          >
+            {pwdLoading ? (
+              <>
+                <Loader2 className="animate-spin h-4 w-4 ml-1.5" />
+                جاري التحديث...
+              </>
+            ) : (
+              'تأكيد وحفظ الرقم السري الجديد 🔐'
+            )}
+          </button>
+        </form>
       </div>
     </div>
   );

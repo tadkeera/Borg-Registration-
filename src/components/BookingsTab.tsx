@@ -5,13 +5,25 @@
 
 import React, { useState, useEffect } from 'react';
 import { Booking, Doctor, Schedule, BookingStatus, PaymentStatus } from '../types';
-import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleAlert, PlusSquare, Trash2, X, CheckSquare, Coins, CalendarDays, Key, Hospital, ArrowLeft, Clock, AlertTriangle, CheckCircle, ChevronLeft, RefreshCw } from 'lucide-react';
+import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleAlert, PlusSquare, Trash2, X, CheckSquare, Coins, CalendarDays, Key, Hospital, ArrowLeft, Clock, AlertTriangle, CheckCircle, ChevronLeft, RefreshCw, Stethoscope } from 'lucide-react';
 import { HOSPITAL_LOGO } from '../utils/constants';
 
 function getYemenTime(): Date {
   const now = new Date();
   const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
   return new Date(utc + (3600000 * 3)); // Yemen UTC+3
+}
+
+function formatDateToArabicNumerals(dateStr: string): string {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const year = parts[0];
+    const month = parseInt(parts[1], 10);
+    const day = parseInt(parts[2], 10);
+    return `${day}/${month}/${year}`;
+  }
+  return dateStr;
 }
 
 interface BookingsTabProps {
@@ -259,31 +271,25 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {displayedSchedules.map((sch) => {
+              {displayedSchedules.map((sch, schIdx) => {
                 const doc = getDoctorForSchedule(sch);
                 if (!doc) return null;
                 const isFull = sch.available_capacity === 0;
-                const shiftText = sch.start_time === '15:00' ? 'فترة مسائية (Evening)' : 'فترة صباحية (Morning)';
 
-                // Define distinct border color and 3D shadow styling based on doctor's specialty
-                const getDoctorDesign = (specialty: string) => {
-                  const s = specialty || '';
-                  if (s.includes('أطفال') || s.includes('الأطفال')) {
-                    return 'border-r-4 border-r-amber-500 shadow-[0_8px_30px_rgba(245,158,11,0.06)] hover:shadow-[0_20px_40px_rgba(245,158,11,0.13)]';
-                  }
-                  if (s.includes('نساء') || s.includes('ولادة') || s.includes('توليد') || s.includes('النساء')) {
-                    return 'border-r-4 border-r-rose-500 shadow-[0_8px_30px_rgba(244,63,94,0.06)] hover:shadow-[0_20px_40px_rgba(244,63,94,0.13)]';
-                  }
-                  if (s.includes('باطنية') || s.includes('باطني') || s.includes('قلب') || s.includes('جراحة')) {
-                    return 'border-r-4 border-r-indigo-500 shadow-[0_8px_30px_rgba(99,102,241,0.06)] hover:shadow-[0_20px_40px_rgba(99,102,241,0.13)]';
-                  }
-                  if (s.includes('أذن') || s.includes('عيون') || s.includes('جلدية')) {
-                    return 'border-r-4 border-r-emerald-500 shadow-[0_8px_30px_rgba(16,185,129,0.06)] hover:shadow-[0_20px_40px_rgba(16,185,129,0.13)]';
-                  }
-                  return 'border-r-4 border-r-blue-600 shadow-[0_8px_30px_rgba(37,99,235,0.06)] hover:shadow-[0_20px_40px_rgba(37,99,235,0.13)]';
-                };
+                const CardBorders = [
+                  'border-blue-400 focus:border-blue-600 shadow-[0_8px_30px_rgba(59,130,246,0.05)] hover:shadow-[0_20px_40px_rgba(59,130,246,0.1)]',
+                  'border-emerald-400 focus:border-emerald-600 shadow-[0_8px_30px_rgba(16,185,129,0.05)] hover:shadow-[0_20px_40px_rgba(16,185,129,0.1)]',
+                  'border-orange-400 focus:border-orange-600 shadow-[0_8px_30px_rgba(249,115,22,0.05)] hover:shadow-[0_20px_40px_rgba(249,115,22,0.1)]',
+                  'border-purple-400 focus:border-purple-600 shadow-[0_8px_30px_rgba(139,92,246,0.05)] hover:shadow-[0_20px_40px_rgba(139,92,246,0.1)]',
+                  'border-rose-400 focus:border-rose-600 shadow-[0_8px_30px_rgba(244,63,94,0.05)] hover:shadow-[0_20px_40px_rgba(244,63,94,0.1)]',
+                  'border-amber-400 focus:border-amber-600 shadow-[0_8px_30px_rgba(245,158,11,0.05)] hover:shadow-[0_20px_40px_rgba(245,158,11,0.1)]',
+                  'border-teal-400 focus:border-teal-600 shadow-[0_8px_30px_rgba(20,184,166,0.05)] hover:shadow-[0_20px_40px_rgba(20,184,166,0.1)]',
+                  'border-indigo-400 focus:border-indigo-600 shadow-[0_8px_30px_rgba(99,102,241,0.05)] hover:shadow-[0_20px_40px_rgba(99,102,241,0.1)]',
+                  'border-cyan-400 focus:border-cyan-600 shadow-[0_8px_30px_rgba(6,182,212,0.05)] hover:shadow-[0_20px_40px_rgba(6,182,212,0.1)]',
+                  'border-pink-400 focus:border-pink-600 shadow-[0_8px_30px_rgba(236,72,153,0.05)] hover:shadow-[0_20px_40px_rgba(236,72,153,0.1)]'
+                ];
 
-                const cardDesign = getDoctorDesign(doc.specialty);
+                const cardBorderClass = CardBorders[schIdx % CardBorders.length];
 
                 return (
                   <div
@@ -294,62 +300,82 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                       setStatusFilter('all');
                       setPaymentFilter('all');
                     }}
-                    className={`bg-white rounded-2xl p-6 border border-slate-100 cursor-pointer hover:-translate-y-1.5 transform transition-all duration-300 space-y-4 relative overflow-hidden group ${cardDesign} ${
-                      isFull ? 'bg-red-50/15' : ''
+                    className={`bg-white rounded-[2rem] p-6 cursor-pointer hover:-translate-y-1.5 transform transition-all duration-300 relative overflow-hidden group border-[3px] border-solid ${cardBorderClass} flex flex-col justify-between ${
+                      isFull ? 'bg-red-50/5' : ''
                     }`}
                   >
-                    {/* Shift Indicators */}
-                    <div className="flex items-center justify-between">
-                      <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black tracking-wide uppercase ${
-                        sch.start_time === '15:00'
-                          ? 'bg-amber-50 text-amber-700 border border-amber-100'
-                          : 'bg-indigo-50 text-indigo-700 border border-indigo-100'
+                    {/* Top Row: Left Day/Date, Right Period Badge */}
+                    <div className="flex justify-between items-start w-full gap-4">
+                      {/* Left Side: Day & Date */}
+                      <div className="flex flex-col items-start text-left">
+                        <div className="flex items-center gap-2">
+                          <span className="text-2xl md:text-3xl font-black text-[#1a1a1a] leading-none">
+                            {getArabicDayName(filterDate)}
+                          </span>
+                          <CalendarDays className="h-7 w-7 text-slate-500" />
+                        </div>
+                        <span className="text-2xl md:text-3xl font-black text-[#1a1a1a] mt-2 tracking-wide font-sans">
+                          {formatDateToArabicNumerals(filterDate)}
+                        </span>
+                      </div>
+
+                      {/* Right Side: Period Pill (Enlarged) */}
+                      <span className={`px-6 py-3.5 rounded-[1.25rem] text-[20pt] font-black tracking-normal flex items-center justify-center shadow-sm border-[1.5px] border-solid ${
+                        sch.start_time !== '15:00'
+                          ? 'bg-[#e2f1ff] text-[#0f5ca8] border-[#b9dbf8]'
+                          : 'bg-[#ffebe0] text-[#c05621] border-[#ffd5bf]'
                       }`}>
-                        {shiftText}
-                      </span>
-                      <span className="text-[10px] text-slate-500 font-black flex items-center gap-1">
-                        <CalendarDays className="h-3.5 w-3.5 text-slate-400" />
-                        {ARABIC_DAYS[sch.day_of_week]}
+                        {sch.start_time !== '15:00' ? 'فترة صباحية (MORNING)' : 'فترة مسائية (EVENING)'}
                       </span>
                     </div>
 
-                    <div className="space-y-1">
-                      <h3 className="text-sm font-black text-slate-800 group-hover:text-blue-700 transition-colors">
+                    {/* Middle Section: Doctor Info & Subject (Centered) */}
+                    <div className="flex flex-col items-center justify-center text-center w-full mt-8 mb-6">
+                      <h3 className="text-3xl md:text-4xl font-black text-[#1a1a1a] group-hover:text-blue-700 transition-colors leading-tight">
                         {doc.name}
                       </h3>
-                      <div className="flex items-center text-[10px] text-slate-500 font-bold gap-1 mt-1">
-                        <span className="text-slate-400">🧬 التخصص:</span>
-                        <span className="px-1.5 py-0.5 bg-slate-100 rounded text-slate-700">{doc.specialty}</span>
+                      <div className="flex items-center justify-center gap-2 text-[#4a4a4a] text-lg md:text-xl font-bold mt-2">
+                        <span>التخصص: {doc.specialty}</span>
+                        <Stethoscope className="h-6 w-6 text-slate-400" />
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between border-t border-slate-100 pt-4">
+                    {/* Divider line */}
+                    <div className="border-t border-slate-100 my-2" />
+
+                    {/* Bottom Row: Separated Labels Row & Boxes Row to guarantee perfect parallel alignment */}
+                    <div className="grid grid-cols-2 gap-4 pt-1.5">
+                      {/* Left Block Label: Remaining Seats */}
                       <div className="text-right">
-                        <span className="block text-[10px] uppercase tracking-wider text-slate-400 font-bold">السعة الكلية</span>
-                        <span className="text-xl font-black text-slate-800 font-mono block mt-1 tracking-wider">{sch.max_capacity} حالات/اليوم</span>
+                        <span className="text-[18pt] font-black text-slate-900 leading-tight block select-none">المقاعد المتبقية:</span>
                       </div>
-                      <div className="text-left font-sans">
+
+                      {/* Right Block Label: Total Capacity */}
+                      <div className="text-right">
+                        <span className="text-[18pt] font-black text-slate-900 leading-tight block select-none">السعة الكلية:</span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 mt-2">
+                      {/* Left Block Box: Remaining Seats */}
+                      <div className="w-full">
                         {isFull ? (
-                          <div className="text-left">
-                            <span className="block text-[10px] text-slate-400 font-bold uppercase text-left mb-1">المقاعد المتبقية</span>
-                            <span className="inline-flex items-center justify-center text-red-600 font-black text-xs bg-red-50 px-3 py-1.5 rounded-xl border border-red-200 animate-pulse text-center">
-                              المقاعد ممتلئة / اكتمل الحجز 🚫
-                            </span>
+                          <div className="bg-red-50 border-2 md:border-[3px] border-red-200 text-red-600 font-black h-[72px] rounded-2xl flex items-center justify-center text-center leading-tight">
+                            <span className="text-[20pt]">ممتلئة 🚫</span>
                           </div>
                         ) : (
-                          <div className="text-left">
-                            <span className="block text-[10px] text-slate-400 font-bold uppercase text-left mb-1">المقاعد المتبقية</span>
-                            <span className="text-xl font-black font-mono text-emerald-600 block bg-emerald-50 px-3 py-1 rounded-lg border border-emerald-100 text-center">
-                              {sch.available_capacity} مقاعد متاحة
-                            </span>
+                          <div className="bg-[#e7f9ee] border-2 md:border-[3px] border-[#82d9c4] text-[#196f3d] font-black h-[72px] rounded-2xl flex items-center justify-center" dir="rtl">
+                            <span className="text-[36pt] leading-none select-none">{sch.available_capacity}</span>
                           </div>
                         )}
                       </div>
-                    </div>
 
-                    {/* Quick indicator arrow indicator inside back on hover */}
-                    <div className="absolute left-3 top-3 opacity-0 group-hover:opacity-100 transform -translate-x-1 group-hover:translate-x-0 transition-all duration-300">
-                      <ChevronLeft className="h-4.5 w-4.5 text-slate-400 hover:text-blue-700" />
+                      {/* Right Block Box: Total Capacity */}
+                      <div className="w-full">
+                        <div className="bg-[#e2f1ff] border-2 md:border-[3px] border-[#9bc5e9] text-[#0c58a6] font-black h-[72px] rounded-2xl flex items-center justify-center" dir="rtl">
+                          <span className="text-[36pt] leading-none select-none">{sch.max_capacity}</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 );

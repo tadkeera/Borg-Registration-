@@ -53,21 +53,21 @@ CREATE TABLE IF NOT EXISTS public.bookings (
 -- Create index for faster queue lookup and date filtering
 CREATE INDEX IF NOT EXISTS idx_bookings_lookup ON public.bookings(doctor_id, booking_date);
 
--- 4. WHATSAPP SETTINGS TABLE (Singleton)
+-- 4. WHATSAPP SETTINGS TABLE (Multi-number)
 CREATE TABLE IF NOT EXISTS public.whatsapp_settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1) DEFAULT 1,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     webhook_verify_token TEXT NOT NULL DEFAULT 'doctors_tower_verify_token_123',
     access_token TEXT DEFAULT '',
     app_secret TEXT DEFAULT '',
-    phone_number_id TEXT DEFAULT '',
+    phone_number_id TEXT UNIQUE DEFAULT '',
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
 -- Insert default whatsapp settings
-INSERT INTO public.whatsapp_settings (id, webhook_verify_token, access_token, app_secret, phone_number_id, is_active)
-VALUES (1, 'doctors_tower_verify_token_123', '', '', '', true)
-ON CONFLICT (id) DO NOTHING;
+INSERT INTO public.whatsapp_settings (webhook_verify_token, access_token, app_secret, phone_number_id, is_active)
+VALUES ('doctors_tower_verify_token_123', '', '', '', true)
+ON CONFLICT (phone_number_id) DO NOTHING;
 
 -- 5. SYSTEM SETTINGS TABLE (Singleton)
 CREATE TABLE IF NOT EXISTS public.system_settings (
