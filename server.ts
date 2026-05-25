@@ -46,6 +46,66 @@ const DB_FILE = isVercel
   ? path.join('/tmp', 'db.json')
   : path.join(process.cwd(), 'data', 'db.json');
 
+// Full-proof utility to ensure DB state has all required keys & default users
+function ensureDbDefaults(db: any): DbState {
+  if (!db || typeof db !== 'object') {
+    db = {};
+  }
+  if (!db.doctors) db.doctors = [];
+  if (!db.schedules) db.schedules = [];
+  if (!db.bookings) db.bookings = [];
+  if (!db.bot_sessions) db.bot_sessions = {};
+  if (!db.whatsapp_logs) db.whatsapp_logs = [];
+  
+  if (!db.whatsapp_settings) {
+    db.whatsapp_settings = {
+      id: 1,
+      webhook_verify_token: 'doctors_tower_verify_token_123',
+      access_token: '',
+      app_secret: '',
+      phone_number_id: '',
+      is_active: true
+    };
+  }
+  
+  if (!db.system_settings) {
+    db.system_settings = {
+      id: 1,
+      receptionist_name_required: false,
+      admin_password: '123'
+    };
+  }
+
+  const defaultUsers = [
+    { id: 'u-tadkeera', username: 'tadkeera@gmail.com', password: 'WALEED770@', role: 'admin', employee_name: 'مدير تذكرة (Tadkeera Admin)' },
+    { id: 'u-1', username: 'admin', password: '123', role: 'admin', employee_name: 'مدير النظام الرئيسي' },
+    { id: 'u-2', username: 'receptionist', password: 'receptionist', role: 'receptionist', employee_name: 'موظف الاستقبال الافتراضي' }
+  ];
+
+  if (!db.users || !Array.isArray(db.users)) {
+    db.users = defaultUsers;
+  } else {
+    // Add missing default users
+    defaultUsers.forEach(defUser => {
+      const exists = db.users.some((u: any) => u.username.trim().toLowerCase() === defUser.username.toLowerCase());
+      if (!exists) {
+        db.users.push(defUser);
+      }
+    });
+
+    db.users = db.users.map((u: any) => {
+      if (!u.employee_name) {
+        u.employee_name = u.role === 'admin' 
+          ? (u.username === 'tadkeera@gmail.com' ? 'مدير تذكرة (Tadkeera Admin)' : 'مدير النظام الرئيسي') 
+          : 'موظف الاستقبال الافتراضي';
+      }
+      return u;
+    });
+  }
+
+  return db as DbState;
+}
+
 // Function to load db state from Supabase dynamically on startup
 async function loadDbFromSupabase(): Promise<DbState | null> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
@@ -71,9 +131,9 @@ async function loadDbFromSupabase(): Promise<DbState | null> {
 
     if (data && data.patient_name) {
       const parsed = JSON.parse(data.patient_name);
-      if (parsed && typeof parsed === 'object' && parsed.users) {
+      if (parsed && typeof parsed === 'object') {
         console.log('[SupabaseStorage] Successfully loaded persistent DB state from Supabase.');
-        return parsed;
+        return ensureDbDefaults(parsed);
       }
     }
     console.log('[SupabaseStorage] No persistent DB state found in Supabase (starting fresh).');
@@ -85,6 +145,48 @@ async function loadDbFromSupabase(): Promise<DbState | null> {
 
 let dbSaveQueue: Promise<void> = Promise.resolve();
 let currentSavePromise: Promise<void> = Promise.resolve();
+
+let isDbHydrated = false;
+let dbHydrationPromise: Promise<void> | null = null;
+
+function ensureDbHydrated(): Promise<void> {
+  if (isDbHydrated && memoryDb) {
+    return Promise.resolve();
+  }
+  if (!dbHydrationPromise) {
+    dbHydrationPromise = (async () => {
+      try {
+        const supabaseState = await loadDbFromSupabase();
+        if (supabaseState) {
+          memoryDb = supabaseState;
+          console.log('[Database] Hydrated database successfully with Supabase remote key-value storage state.');
+        } else {
+          console.log('[Database] No remote backup state restored or Supabase not configured. Using local filesystem DB.');
+          if (!memoryDb) {
+            if (fs.existsSync(DB_FILE)) {
+              try {
+                const data = fs.readFileSync(DB_FILE, 'utf-8');
+                memoryDb = ensureDbDefaults(JSON.parse(data));
+              } catch (e) {
+                memoryDb = ensureDbDefaults(null);
+              }
+            } else {
+              memoryDb = ensureDbDefaults(null);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[Database] Failed to coordinate Supabase state sync on cold-start/hydration:', err);
+        if (!memoryDb) {
+          memoryDb = ensureDbDefaults(null);
+        }
+      } finally {
+        isDbHydrated = true;
+      }
+    })();
+  }
+  return dbHydrationPromise;
+}
 
 // Function to save db state backup directly to Supabase table
 async function saveDbToSupabase(db: DbState): Promise<void> {
@@ -269,34 +371,17 @@ function readDb(): DbState {
   }
   try {
     if (!fs.existsSync(DB_FILE)) {
-      return defaultDb;
+      memoryDb = ensureDbDefaults(null);
+      return memoryDb;
     }
     const data = fs.readFileSync(DB_FILE, 'utf-8');
     const db = JSON.parse(data);
-    if (!db.users) {
-      db.users = [
-        { id: 'u-tadkeera', username: 'tadkeera@gmail.com', password: 'WALEED770@', role: 'admin', employee_name: 'مدير تذكرة (Tadkeera Admin)' },
-        { id: 'u-1', username: 'admin', password: '123', role: 'admin', employee_name: 'مدير النظام الرئيسي' },
-        { id: 'u-2', username: 'receptionist', password: 'receptionist', role: 'receptionist', employee_name: 'موظف الاستقبال الافتراضي' }
-      ];
-    } else {
-      const hasTadkeera = db.users.some((u: any) => u.username.trim().toLowerCase() === 'tadkeera@gmail.com');
-      if (!hasTadkeera) {
-        db.users.push({ id: 'u-tadkeera', username: 'tadkeera@gmail.com', password: 'WALEED770@', role: 'admin', employee_name: 'مدير تذكرة (Tadkeera Admin)' });
-      }
-      db.users = db.users.map((u: any) => {
-        if (!u.employee_name) {
-          u.employee_name = u.role === 'admin' ? (u.username === 'tadkeera@gmail.com' ? 'مدير تذكرة (Tadkeera Admin)' : 'مدير النظام الرئيسي') : 'موظف الاستقبال الافتراضي';
-        }
-        return u;
-      });
-    }
-    // Sync into memoryDb as well so we use memory fast-path
-    memoryDb = db;
-    return db;
+    memoryDb = ensureDbDefaults(db);
+    return memoryDb;
   } catch (err) {
     console.error('Error reading database file, returning default schema:', err);
-    return defaultDb;
+    memoryDb = ensureDbDefaults(null);
+    return memoryDb;
   }
 }
 
@@ -316,6 +401,7 @@ function writeDb(db: DbState) {
   // Trigger outbound backup sync and chain the promise so we can wait for completion before completing the HTTP request
   currentSavePromise = (async () => {
     try {
+      await ensureDbHydrated();
       await saveDbToSupabase(db);
     } catch (err) {
       console.warn('[SupabaseStorage] Async state backup failed inside chain:', err);
@@ -339,6 +425,16 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
+  }
+  next();
+});
+
+// Middleware to ensure Database is fully hydrated and loaded from Supabase before executing any route code
+app.use(async (req, res, next) => {
+  try {
+    await ensureDbHydrated();
+  } catch (err) {
+    console.error('[Middleware] Error ensuring database hydration:', err);
   }
   next();
 });
@@ -1696,15 +1792,10 @@ app.post('/api/simulator/send-message', (req, res) => {
 // -------------------------------------------------------------------------
 
 async function startServer() {
-  // Try to load any previously saved DB state from Supabase to provide zero-loss durability on serverless recycles
+  // Pre-hydrate/restore DB state from Supabase to provide zero-loss durability on cold-start
   try {
-    const supabaseState = await loadDbFromSupabase();
-    if (supabaseState) {
-      memoryDb = supabaseState;
-      console.log('[Database] Hydrated database successfully with Supabase remote key-value storage state.');
-    } else {
-      console.log('[Database] No remote backup state restored. Initializing with local filesystem or default schema.');
-    }
+    await ensureDbHydrated();
+    console.log('[Database] Database initial setup and hydration completed.');
   } catch (err) {
     console.error('[Database] Failed to coordinate Supabase state sync on cold-start:', err);
   }
