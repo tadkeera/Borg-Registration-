@@ -6,7 +6,6 @@
 import React, { useState, useEffect } from 'react';
 import { Doctor, Schedule, Booking } from './types';
 import Login from './components/Login';
-import hospitalLogo from './assets/logo.png';
 import DoctorsTab from './components/DoctorsTab';
 import SchedulesTab from './components/SchedulesTab';
 import BookingsTab from './components/BookingsTab';
@@ -269,7 +268,7 @@ export default function App() {
         <div className="flex items-center space-x-3 space-x-reverse">
           <img
             id="brand-logo"
-            src={hospitalLogo}
+            src="/logo.png"
             alt="شعار مستشفى برج الأطباء"
             className="hospital-logo"
             style={{ width: '56px', height: 'auto', objectFit: 'contain' }}
