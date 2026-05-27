@@ -108,6 +108,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// Serve direct public static assets (such as logo.png) explicitly
+app.use(express.static(path.join(process.cwd(), 'public')));
+
 // Basic webhook rate limiting structure (simplified)
 const rateLimits: Record<string, { count: number; firstRequest: number }> = {};
 function webhookRateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -1225,21 +1228,86 @@ function getGroupedDatesForDoctor(
 ): { prompt: string; options: GroupedDayOption[] } {
   const docSchedules = schedules.filter(s => s.doctor_id === doctor.id);
   
+  const yemenNow = getYemenTime();
+  const currentJsDay = yemenNow.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+  const jsToOur = [1, 2, 3, 4, 5, -1, 0]; // Sun=1, Mon=2, Tue=3, Wed=4, Thu=5, Fri=-1, Sat=0
+  const ourCurrentDay = jsToOur[currentJsDay];
+
   const rawOptions: { day_of_week: number; date: string; weekLabel: string; schedule: Schedule }[] = [];
+
   docSchedules.forEach(s => {
-    rawOptions.push({
-      day_of_week: s.day_of_week,
-      date: getTargetDate(s.day_of_week),
-      weekLabel: 'الأسبوع الحالي',
-      schedule: s
-    });
-    if (doctor.allow_second_week_booking) {
+    const startHour = parseInt(s.start_time.split(':')[0]);
+    const isMorning = startHour < 13;
+    const currentHour = yemenNow.getHours();
+
+    if (ourCurrentDay === -1) {
+      // Friday (Day off) - bookings refer to upcoming Saturday onwards
+      // Adding for "current" week (الأسبوع الحالي)
+      const daysToAddCurrent = 1 + s.day_of_week;
+      const dateCurrent = new Date(yemenNow.getTime() + daysToAddCurrent * 24 * 60 * 60 * 1000);
       rawOptions.push({
         day_of_week: s.day_of_week,
-        date: getNextWeekDate(s.day_of_week),
-        weekLabel: 'الأسبوع الثاني',
+        date: dateCurrent.toISOString().split('T')[0],
+        weekLabel: 'الأسبوع الحالي',
         schedule: s
       });
+
+      // Adding for "next" week (الأسبوع الثاني)
+      if (doctor.allow_second_week_booking) {
+        const daysToAddNext = 1 + s.day_of_week + 7;
+        const dateNext = new Date(yemenNow.getTime() + daysToAddNext * 24 * 60 * 60 * 1000);
+        rawOptions.push({
+          day_of_week: s.day_of_week,
+          date: dateNext.toISOString().split('T')[0],
+          weekLabel: 'الأسبوع الثاني',
+          schedule: s
+        });
+      }
+    } else {
+      const diff = s.day_of_week - ourCurrentDay;
+
+      // Current week processing (الأسبوع الحالي)
+      if (diff === 0) {
+        // TODAY
+        let isExpired = false;
+        if (isMorning && currentHour >= 12) {
+          isExpired = true;
+        } else if (!isMorning && currentHour >= 19) {
+          isExpired = true;
+        }
+
+        if (!isExpired) {
+          // Not expired today, add to current week
+          const dateCurrent = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
+          rawOptions.push({
+            day_of_week: s.day_of_week,
+            date: dateCurrent.toISOString().split('T')[0],
+            weekLabel: 'الأسبوع الحالي',
+            schedule: s
+          });
+        }
+      } else if (diff > 0) {
+        // Future day this week
+        const dateCurrent = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
+        rawOptions.push({
+          day_of_week: s.day_of_week,
+          date: dateCurrent.toISOString().split('T')[0],
+          weekLabel: 'الأسبوع الحالي',
+          schedule: s
+        });
+      }
+
+      // Next week processing (الأسبوع الثاني)
+      if (doctor.allow_second_week_booking) {
+        const diffNext = diff + 7;
+        const dateNext = new Date(yemenNow.getTime() + diffNext * 24 * 60 * 60 * 1000);
+        rawOptions.push({
+          day_of_week: s.day_of_week,
+          date: dateNext.toISOString().split('T')[0],
+          weekLabel: 'الأسبوع الثاني',
+          schedule: s
+        });
+      }
     }
   });
 

@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import hospitalLogo from '../assets/logo.png';
 import { Booking, Doctor, Schedule, BookingStatus, PaymentStatus } from '../types';
 import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleAlert, PlusSquare, Trash2, X, CheckSquare, Coins, CalendarDays, Key, Hospital, ArrowLeft, Clock, AlertTriangle, CheckCircle, ChevronLeft, RefreshCw, Stethoscope } from 'lucide-react';
 
@@ -177,6 +178,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
 
   const filteredBookings = bookings.filter(b => {
     if (b.schedule_id !== selectedSchId) return false;
+    if (b.booking_date !== filterDate) return false;
     const matchesSearch = b.patient_name.toLowerCase().includes(search.toLowerCase()) || 
                           b.patient_phone.includes(search);
     const matchesStatus = statusFilter === 'all' || b.status === statusFilter;
@@ -725,7 +727,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
             <div id="printable-ticket" className="p-6 text-center space-y-4 bg-white">
               <div className="flex justify-center mb-1">
                 <img
-                  src="/logo.png"
+                  src={hospitalLogo}
                   alt="Logo"
                   className="hospital-logo"
                   style={{ width: '80px', height: 'auto', objectFit: 'contain' }}
