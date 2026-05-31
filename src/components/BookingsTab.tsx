@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { Booking, Doctor, Schedule, BookingStatus, PaymentStatus } from '../types';
 import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleAlert, PlusSquare, Trash2, X, CheckSquare, Coins, CalendarDays, Key, Hospital, ArrowLeft, Clock, AlertTriangle, CheckCircle, ChevronLeft, RefreshCw, Stethoscope } from 'lucide-react';
+import { HOSPITAL_LOGO } from '../utils/constants';
 
 function getYemenTime(): Date {
   const now = new Date();
@@ -726,7 +727,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
             <div id="printable-ticket" className="p-6 text-center space-y-4 bg-white">
               <div className="flex justify-center mb-1">
                 <img
-                  src="/logo.png"
+                  src={HOSPITAL_LOGO}
                   alt="Logo"
                   className="hospital-logo"
                   style={{ width: '80px', height: 'auto', objectFit: 'contain' }}

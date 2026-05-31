@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import { Shield, User, Loader2, Key } from 'lucide-react';
+import { HOSPITAL_LOGO } from '../utils/constants';
 
 interface LoginProps {
   onLoginSuccess: (role: 'admin' | 'receptionist', token: string, name: string | null) => void;
@@ -59,7 +60,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         <div className="flex justify-center">
           <img
             id="login-logo"
-            src="/logo.png"
+            src={HOSPITAL_LOGO}
             alt="شعار مستشفى برج الأطباء"
             className="hospital-logo"
             style={{ width: '140px', height: 'auto', objectFit: 'contain' }}

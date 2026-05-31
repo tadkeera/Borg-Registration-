@@ -13,6 +13,7 @@ import SettingsTab from './components/SettingsTab';
 import SimulatorTab from './components/SimulatorTab';
 import AccessSettingsTab from './components/AccessSettingsTab';
 import { ShieldCheck, UserCheck, Stethoscope, BookOpen, Clock, PhoneCall, HelpCircle, LogOut } from 'lucide-react';
+import { HOSPITAL_LOGO } from './utils/constants';
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(() => {
@@ -268,7 +269,7 @@ export default function App() {
         <div className="flex items-center space-x-3 space-x-reverse">
           <img
             id="brand-logo"
-            src="/logo.png"
+            src={HOSPITAL_LOGO}
             alt="شعار مستشفى برج الأطباء"
             className="hospital-logo"
             style={{ width: '56px', height: 'auto', objectFit: 'contain' }}
