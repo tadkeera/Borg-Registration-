@@ -642,10 +642,26 @@ app.get('/api/bookings', async (req, res) => {
       .order('created_at', { ascending: true });
 
     if (error) throw error;
+
+    // Fetch custom reminders dictionary
+    let remindersDict: Record<string, { sent_by: string, sent_at: string }> = {};
+    try {
+      const { data: reminderRow } = await supabase
+        .from('whatsapp_sessions')
+        .select('session_data')
+        .eq('space_server_id', 'bookings_custom_reminders')
+        .maybeSingle();
+      if (reminderRow && reminderRow.session_data) {
+        remindersDict = JSON.parse(reminderRow.session_data);
+      }
+    } catch (_) {}
+
     const mapped = (data || []).map(b => ({
       ...b,
       doctor_name: b.doctor ? b.doctor.name : 'طبيب محذوف',
-      doctor_specialty: b.doctor ? b.doctor.specialty : ''
+      doctor_specialty: b.doctor ? b.doctor.specialty : '',
+      reminder_sent_by: remindersDict[b.id]?.sent_by || null,
+      reminder_sent_at: remindersDict[b.id]?.sent_at || null
     }));
     res.json(mapped);
   } catch (err: any) {
@@ -759,6 +775,116 @@ app.put('/api/bookings/:id', async (req, res) => {
   } catch (err: any) {
     console.error('Update booking error:', err.message);
     res.status(500).json({ error: 'Failed to update booking' });
+  }
+});
+
+app.post('/api/bookings/:id/send-reminder', async (req, res) => {
+  const { id } = req.params;
+  const { sender_name } = req.body;
+  try {
+    const supabase = getSupabase();
+
+    // 1. Fetch booking with doctor information
+    const { data: booking, error: bErr } = await supabase
+      .from('bookings')
+      .select('*, doctor:doctors(name, specialty)')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (bErr || !booking) {
+      return res.status(404).json({ error: 'عذراً، هذا الحجز غير موجود بالنظام.' });
+    }
+
+    // 2. Load custom reminders state
+    let remindersDict: Record<string, { sent_by: string, sent_at: string }> = {};
+    const { data: reminderRow } = await supabase
+      .from('whatsapp_sessions')
+      .select('session_data')
+      .eq('space_server_id', 'bookings_custom_reminders')
+      .maybeSingle();
+
+    if (reminderRow && reminderRow.session_data) {
+      try {
+        remindersDict = JSON.parse(reminderRow.session_data);
+      } catch (_) {}
+    }
+
+    // Check if reminder was already sent
+    if (remindersDict[id]) {
+      return res.status(400).json({ 
+        error: `عذراً، تم إرسال تذكير لهذا الحجز مسبقاً بواسطة (${remindersDict[id].sent_by}) في الساعة ${remindersDict[id].sent_at}.` 
+      });
+    }
+
+    // Get active WhatsApp settings
+    const { data: wsData } = await supabase
+      .from('whatsapp_settings')
+      .select('*')
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle();
+
+    // Construct the elegant, professional Arabic message
+    const patientName = booking.patient_name || 'العزيز';
+    const doctorName = booking.doctor ? booking.doctor.name : 'طبيب العيادة';
+    const bookingDate = booking.booking_date;
+    const shiftText = booking.shift === 'Evening' ? 'المسائية (مساءً)' : 'الصباحية (صباحاً)';
+
+    const reminderMessage = `السلام عليكم ورحمة الله وبركاته، 🌹\n` +
+      `عزيزنا المريض: *${patientName}* المحترم،\n\n` +
+      `نود تذكيركم بأن لديكم موعداً عيادياً اليوم مع الدكتور: *${doctorName}*\n` +
+      `📅 *تاريخ الموعد اليوم:* ${bookingDate}\n` +
+      `⏰ *فترة الموعد:* ${shiftText}\n\n` +
+      `📍 يرجى منكم تأكيد حضوركم من خلال الرد على هذه الرسالة بأحد الخيارات التالية:\n` +
+      `1️⃣ *نعم، سأحضر للموعد.*\n` +
+      `2️⃣ *لا، لن أتمكن من الحضور.*\n\n` +
+      `*نتمنى لكم دوام الصحة والعافية،*\n` +
+      `*مستشفى برج الأطباء* 🏥`;
+
+    const cleanPhone = booking.patient_phone;
+
+    // Send WhatsApp Message
+    await sendWhatsAppMessage(cleanPhone, reminderMessage, wsData || { provider: 'huggingface' });
+
+    // Log the sent message in whatsapp_logs
+    await supabase.from('whatsapp_logs').insert([{
+      phone: cleanPhone,
+      direction: 'out',
+      message: reminderMessage,
+      timestamp: getYemenTime().toISOString()
+    }]);
+
+    // Record the send in custom reminders list
+    const yemenTimeStr = getYemenTime().toLocaleString('ar-YE', {
+      timeZone: 'Asia/Aden',
+      dateStyle: 'short',
+      timeStyle: 'short'
+    });
+
+    remindersDict[id] = {
+      sent_by: sender_name || 'موظف الاستقبال',
+      sent_at: yemenTimeStr
+    };
+
+    // Save updated reminders list to Supabase
+    await supabase
+      .from('whatsapp_sessions')
+      .upsert({
+        space_server_id: 'bookings_custom_reminders',
+        session_data: JSON.stringify(remindersDict),
+        updated_at: new Date().toISOString()
+      });
+
+    res.json({
+      success: true,
+      message: 'تم إرسال تذكير الواتساب المخصص للمريض بنجاح.',
+      reminder_sent_by: remindersDict[id].sent_by,
+      reminder_sent_at: remindersDict[id].sent_at
+    });
+
+  } catch (err: any) {
+    console.error('Send custom reminder error:', err.message);
+    res.status(500).json({ error: 'عذراً، فشل إرسال رسالة التذكير.' });
   }
 });
 

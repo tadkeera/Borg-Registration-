@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Booking, Doctor, Schedule, BookingStatus, PaymentStatus } from '../types';
-import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleAlert, PlusSquare, Trash2, X, CheckSquare, Coins, CalendarDays, Key, Hospital, ArrowLeft, Clock, AlertTriangle, CheckCircle, ChevronLeft, RefreshCw, Stethoscope } from 'lucide-react';
+import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleAlert, PlusSquare, Trash2, X, CheckSquare, Coins, CalendarDays, Key, Hospital, ArrowLeft, Clock, AlertTriangle, CheckCircle, ChevronLeft, RefreshCw, Stethoscope, Send, Loader2 } from 'lucide-react';
 import { HOSPITAL_LOGO } from '../utils/constants';
 
 function getYemenTime(): Date {
@@ -54,6 +54,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [paymentFilter, setPaymentFilter] = useState<string>('all');
   const [deleteBookingId, setDeleteBookingId] = useState<string | null>(null);
+  const [sendingReminderId, setSendingReminderId] = useState<string | null>(null);
 
   // Manual booking modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -165,6 +166,39 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
   const handleDeleteClick = (id: string) => {
     if (!isAdmin) return;
     setDeleteBookingId(id);
+  };
+
+  const handleSendReminder = async (b: Booking) => {
+    if (sendingReminderId) return;
+    
+    const confirmSend = window.confirm(
+      `هل أنت متأكد من رغبتك في إرسال رسالة تذكير تأكيد الحضور عبر الواتساب للمريض: (${b.patient_name}) التابع للدكتور (${b.doctor_name || 'طبيب العيادة'})؟`
+    );
+    if (!confirmSend) return;
+
+    setSendingReminderId(b.id);
+    try {
+      const sender_name = role === 'admin' ? 'مدير النظام' : receptionistName || 'موظف الاستقبال';
+      const res = await fetch(`/api/bookings/${b.id}/send-reminder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sender_name })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'فشل إرسال رسالة التذكير.');
+      } else {
+        if (onRefresh) {
+          await onRefresh();
+        }
+        alert(data.message || 'تم إرسال تذكير الواتساب المخصص للمريض بنجاح.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('حدث خطأ في الاتصال بالسيرفر أثناء إرسال التذكير.');
+    } finally {
+      setSendingReminderId(null);
+    }
   };
 
   // Helper to get doctor corresponding to schedule
@@ -616,7 +650,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
 
                           {/* Ticket action / print */}
                           <td className="px-4 py-3 whitespace-nowrap text-center">
-                            <div className="flex items-center justify-center gap-2">
+                            <div className="flex flex-col md:flex-row items-center justify-center gap-2">
                               <button
                                 onClick={() => setActiveTicket(b)}
                                 className="p-1 px-2 hover:bg-slate-50 text-slate-600 rounded border border-slate-200 transition-colors text-[10px] font-bold flex items-center gap-0.5 cursor-pointer"
@@ -624,6 +658,41 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                                 <Printer className="h-3 w-3" />
                                 كرت الحجز
                               </button>
+
+                              {b.reminder_sent_by ? (
+                                <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 p-1.5 rounded-lg flex flex-col items-center justify-center font-bold text-[9px] min-w-[130px]" dir="rtl">
+                                  <span className="flex items-center gap-0.5 text-emerald-700 font-extrabold text-[10px]">
+                                    <CheckCircle className="h-3 w-3 text-emerald-600" />
+                                    تم تذكير المريض 📱
+                                  </span>
+                                  <span className="text-[8px] text-slate-400 mt-0.5">
+                                    بواسطة: {b.reminder_sent_by} | {b.reminder_sent_at}
+                                  </span>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => handleSendReminder(b)}
+                                  disabled={sendingReminderId !== null}
+                                  className={`p-1 px-2.5 rounded border text-[10px] font-black flex items-center gap-1 cursor-pointer transition-all ${
+                                    sendingReminderId === b.id
+                                      ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                                      : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 active:scale-95'
+                                  }`}
+                                  title="إرسال رسالة تذكير واتساب مخصصة للمريض لتأكيد الحضور"
+                                >
+                                  {sendingReminderId === b.id ? (
+                                    <>
+                                      <Loader2 className="h-3 w-3 animate-spin text-emerald-600" />
+                                      جاري الإرسال...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Send className="h-2.5 w-2.5 text-emerald-600" />
+                                      تذكير WhatsApp 📱
+                                    </>
+                                  )}
+                                </button>
+                              )}
 
                               {isAdmin && (
                                 <button

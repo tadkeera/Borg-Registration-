@@ -45,6 +45,9 @@ export interface Booking {
   // Related info
   doctor_name?: string;
   doctor_specialty?: string;
+  reminder_sent_by?: string | null;
+  reminder_sent_at?: string | null;
+  shift?: string;
 }
 
 export interface WhatsAppSettings {
