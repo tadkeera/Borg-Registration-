@@ -60,8 +60,17 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_settings (
     access_token TEXT DEFAULT '',
     app_secret TEXT DEFAULT '',
     phone_number_id TEXT UNIQUE DEFAULT '',
+    provider TEXT DEFAULT 'meta',
+    render_server_url TEXT DEFAULT '',
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- WHATSAPP WEBSOCKET/WEB SESSIONS FOR DEPLOYMENTS (Hugging Face / Render)
+CREATE TABLE IF NOT EXISTS public.whatsapp_sessions (
+    space_server_id TEXT PRIMARY KEY,
+    session_data TEXT, -- Base64 encoded zip data containing .wwebjs_auth folder
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
 -- Insert default whatsapp settings

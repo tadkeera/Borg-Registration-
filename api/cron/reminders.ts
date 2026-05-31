@@ -54,7 +54,17 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    console.log(`[Reminder Cron] Sending reminders for ${bookings.length} booking(s).`);
+    // Fetch active whatsapp settings
+    const { data: wsData } = await supabase
+      .from('whatsapp_settings')
+      .select('*')
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle();
+
+    const activeSettings = wsData;
+
+    console.log(`[Reminder Cron] Sending reminders for ${bookings.length} booking(s). Selected provider: ${activeSettings?.provider || 'meta'}`);
 
     let sentCount = 0;
     for (const b of bookings) {
@@ -75,38 +85,82 @@ export default async function handler(req: any, res: any) {
         `🏥 *مستشفى برج الأطباء - Borg Alatiba*`;
 
       let sentSuccess = false;
-      const provider = process.env.WHATSAPP_PROVIDER || 'ultramsg';
+      const provider = activeSettings?.provider || 'meta';
 
-      if (provider === 'whapi') {
-        const whapiToken = process.env.WHAPI_TOKEN;
-        // Whapi.cloud API Integration
-        const resWhapi = await fetch('https://gate.whapi.cloud/messages/text', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${whapiToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            to: patientPhone.replace('+', ''), // standard number format without plus
-            body: arabicMessage
-          })
-        });
-        sentSuccess = resWhapi.ok;
-      } else {
-        // Default: Pure Ultramsg Integration
-        const instanceId = process.env.ULTRAMSG_INSTANCE_ID;
-        const ultraToken = process.env.ULTRAMSG_TOKEN;
+      if (provider === 'render') {
+        const renderServerUrl = activeSettings?.render_server_url || '';
+        if (renderServerUrl) {
+          const cleanUrl = renderServerUrl.endsWith('/') ? `${renderServerUrl}api/send-message` : `${renderServerUrl}/api/send-message`;
+          try {
+            const resRender = await fetch(cleanUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                to: patientPhone,
+                message: arabicMessage
+              })
+            });
+            sentSuccess = resRender.ok;
+          } catch (err: any) {
+            console.error('[Reminder Cron Render Gateway Exception]', err.message);
+          }
+        }
+      } else if (provider === 'meta') {
+        const accessToken = activeSettings?.access_token || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
+        const phoneNumberId = activeSettings?.phone_number_id || process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.META_PHONE_NUMBER_ID;
         
-        const resUltra = await fetch(`https://api.ultramsg.com/${instanceId}/messages/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            token: ultraToken || '',
-            to: patientPhone,
-            body: arabicMessage
-          })
-        });
-        sentSuccess = resUltra.ok;
+        if (accessToken && phoneNumberId) {
+          try {
+            const url = `https://graph.facebook.com/v17.0/${phoneNumberId}/messages`;
+            const resMeta = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                messaging_product: 'whatsapp',
+                to: patientPhone.replace('+', ''), // format: 967xxx...
+                type: 'text',
+                text: { body: arabicMessage }
+              })
+            });
+            sentSuccess = resMeta.ok;
+          } catch (err: any) {
+            console.error('[Reminder Cron Meta Exception]', err.message);
+          }
+        }
+      } else {
+        // Legacy environment variables fallback
+        const envProvider = process.env.WHATSAPP_PROVIDER || 'ultramsg';
+        if (envProvider === 'whapi') {
+          const whapiToken = process.env.WHAPI_TOKEN;
+          const resWhapi = await fetch('https://gate.whapi.cloud/messages/text', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${whapiToken}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              to: patientPhone.replace('+', ''),
+              body: arabicMessage
+            })
+          });
+          sentSuccess = resWhapi.ok;
+        } else {
+          const instanceId = process.env.ULTRAMSG_INSTANCE_ID;
+          const ultraToken = process.env.ULTRAMSG_TOKEN;
+          const resUltra = await fetch(`https://api.ultramsg.com/${instanceId}/messages/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              token: ultraToken || '',
+              to: patientPhone,
+              body: arabicMessage
+            })
+          });
+          sentSuccess = resUltra.ok;
+        }
       }
 
       if (sentSuccess) {

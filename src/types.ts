@@ -54,6 +54,8 @@ export interface WhatsAppSettings {
   app_secret: string;
   phone_number_id: string;
   is_active: boolean;
+  provider?: 'meta' | 'render';
+  render_server_url?: string;
 }
 
 export interface SystemSettings {

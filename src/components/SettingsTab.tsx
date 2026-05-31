@@ -24,6 +24,8 @@ interface WaCard {
   phone_number_id: string;
   is_active: boolean;
   isEditing: boolean;
+  provider?: 'meta' | 'render';
+  render_server_url?: string;
 }
 
 export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps) {
@@ -67,7 +69,9 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
         app_secret: '',
         phone_number_id: '',
         is_active: true,
-        isEditing: true
+        isEditing: true,
+        provider: 'meta',
+        render_server_url: ''
       }
     ]);
   };
@@ -107,7 +111,9 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
           access_token: card.access_token,
           app_secret: card.app_secret,
           phone_number_id: card.phone_number_id,
-          is_active: card.is_active
+          is_active: card.is_active,
+          provider: card.provider || 'meta',
+          render_server_url: card.render_server_url || ''
         })
       });
 
@@ -295,10 +301,39 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
                   </div>
                 </div>
 
+                {/* Provider selector */}
+                <div className="bg-slate-50 p-4 rounded-xl space-y-3 border border-slate-100">
+                  <span className="block text-xs font-black text-slate-700">بوابة الربط والرد التلقائي لبوت الواتساب:</span>
+                  <div className="flex flex-col sm:flex-row gap-4">
+                    <label className="flex items-center gap-2 text-xs font-bold text-slate-650 cursor-pointer select-none">
+                      <input
+                        type="radio"
+                        name={`wa-provider-${index}`}
+                        disabled={!card.isEditing || !isAdmin}
+                        checked={(card.provider || 'meta') === 'meta'}
+                        onChange={() => handleCardInputChange(index, 'provider', 'meta')}
+                        className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                      />
+                      بوابة Meta الرسمية (Meta Cloud API)
+                    </label>
+                    <label className="flex items-center gap-2 text-xs font-bold text-slate-650 cursor-pointer select-none">
+                      <input
+                        type="radio"
+                        name={`wa-provider-${index}`}
+                        disabled={!card.isEditing || !isAdmin}
+                        checked={card.provider === 'render'}
+                        onChange={() => handleCardInputChange(index, 'provider', 'render')}
+                        className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                      />
+                      بوابة Render المجانية (Whatsapp Web Bot)
+                    </label>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
-                      معرف هاتف الواتساب (Phone ID) <span className="text-red-500">*</span>
+                      معرف الهاتف أو اسم البوت الفريد <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="text"
@@ -311,49 +346,70 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
                     />
                   </div>
 
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
-                      رمز التحقق للويب هوك (Verify Token)
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      disabled={!card.isEditing || !isAdmin}
-                      value={card.webhook_verify_token}
-                      onChange={(e) => handleCardInputChange(index, 'webhook_verify_token', e.target.value)}
-                      placeholder="رمز التحقق للويب هوك"
-                      className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
-                    />
-                  </div>
+                  {(card.provider || 'meta') === 'meta' ? (
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
+                        رمز التحقق للويب هوك (Verify Token)
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        disabled={!card.isEditing || !isAdmin}
+                        value={card.webhook_verify_token}
+                        onChange={(e) => handleCardInputChange(index, 'webhook_verify_token', e.target.value)}
+                        placeholder="رمز التحقق للويب هوك"
+                        className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
+                        رابط خادم Render المضيف للبوت <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="url"
+                        required
+                        disabled={!card.isEditing || !isAdmin}
+                        value={card.render_server_url || ''}
+                        onChange={(e) => handleCardInputChange(index, 'render_server_url', e.target.value)}
+                        placeholder="e.g. https://your-server.onrender.com"
+                        className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
+                      />
+                    </div>
+                  )}
                 </div>
 
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
-                    مفتاح السر للتطبيق (Meta App Secret)
-                  </label>
-                  <input
-                    type="password"
-                    disabled={!card.isEditing || !isAdmin}
-                    value={card.app_secret}
-                    onChange={(e) => handleCardInputChange(index, 'app_secret', e.target.value)}
-                    placeholder="مفتاح السر للتطبيق"
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
-                  />
-                </div>
+                {(card.provider || 'meta') === 'meta' && (
+                  <>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
+                        مفتاح السر للتطبيق (Meta App Secret)
+                      </label>
+                      <input
+                        type="password"
+                        disabled={!card.isEditing || !isAdmin}
+                        value={card.app_secret}
+                        onChange={(e) => handleCardInputChange(index, 'app_secret', e.target.value)}
+                        placeholder="مفتاح السر للتطبيق"
+                        className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
+                      />
+                    </div>
 
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
-                    رمز الوصول الدائم (Permanent Token)
-                  </label>
-                  <textarea
-                    rows={2}
-                    disabled={!card.isEditing || !isAdmin}
-                    value={card.access_token}
-                    onChange={(e) => handleCardInputChange(index, 'access_token', e.target.value)}
-                    placeholder="اكتب رمز الوصول الدائم الطويل جداً هنا"
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
-                  />
-                </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
+                        رمز الوصول الدائم (Permanent Token)
+                      </label>
+                      <textarea
+                        rows={2}
+                        disabled={!card.isEditing || !isAdmin}
+                        value={card.access_token}
+                        onChange={(e) => handleCardInputChange(index, 'access_token', e.target.value)}
+                        placeholder="اكتب رمز الوصول الدائم الطويل جداً هنا"
+                        className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
+                      />
+                    </div>
+                  </>
+                )}
 
                 <div className="flex items-center">
                   <input

@@ -823,7 +823,7 @@ app.get('/api/whatsapp-settings', async (req, res) => {
 });
 
 app.post('/api/whatsapp-settings', async (req, res) => {
-  const { id, webhook_verify_token, access_token, app_secret, phone_number_id, is_active } = req.body;
+  const { id, webhook_verify_token, access_token, app_secret, phone_number_id, is_active, provider, render_server_url } = req.body;
   try {
     const supabase = getSupabase();
     const record: any = {
@@ -831,7 +831,9 @@ app.post('/api/whatsapp-settings', async (req, res) => {
       access_token: access_token || '',
       app_secret: app_secret || '',
       phone_number_id: phone_number_id || '',
-      is_active: is_active !== undefined ? is_active : true
+      is_active: is_active !== undefined ? is_active : true,
+      provider: provider || 'meta',
+      render_server_url: render_server_url || ''
     };
     if (id) {
       record.id = id;
@@ -1313,10 +1315,57 @@ app.all('/api/cron/pending-timeout', async (req, res) => {
 // -------------------------------------------------------------------------
 
 /**
- * Sends a real message out to a user on WhatsApp via the Meta Graph Cloud API
+ * Sends a real message out to a user on WhatsApp via the Meta Graph Cloud API or Render standalone gateway
  */
-async function sendWhatsAppMessage(to: string, text: string, settings: { access_token: string; phone_number_id: string }) {
-  const { access_token, phone_number_id } = settings;
+async function sendWhatsAppMessage(
+  to: string, 
+  text: string, 
+  settings: { 
+    access_token?: string; 
+    phone_number_id?: string; 
+    provider?: 'meta' | 'render'; 
+    render_server_url?: string; 
+  }
+) {
+  const provider = settings?.provider || 'meta';
+  
+  if (provider === 'render') {
+    const renderUrl = settings?.render_server_url || '';
+    if (!renderUrl) {
+      console.error('[WhatsApp Render Device Error] Render server url is missing in settings');
+      return;
+    }
+    const cleanUrl = renderUrl.endsWith('/') ? `${renderUrl}api/send-message` : `${renderUrl}/api/send-message`;
+    console.log(`[WhatsApp API Router] Routing message to Render custom gateway: ${cleanUrl} for [+${to}]`);
+    try {
+      const response = await fetch(cleanUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          to: to,
+          message: text
+        })
+      });
+      const bodyText = await response.text();
+      if (!response.ok) {
+        console.error(`[WhatsApp Render Error] Render API rejected message for ${to}. Http status: ${response.status}. Response:`, bodyText);
+      } else {
+        console.log(`[WhatsApp Render Success] Dispatched message to [+${to}] via Render successfully! Response:`, bodyText);
+      }
+    } catch (err: any) {
+      console.error(`[WhatsApp Render Exception] Failed to POST to Render gateway:`, err.message);
+    }
+    return;
+  }
+
+  // Default block: official Meta Cloud API
+  const { access_token, phone_number_id } = settings || {};
+  if (!access_token || !phone_number_id) {
+    console.error(`[WhatsApp Meta Error] Missing Meta tokens for ${to} (access_token or phone_number_id)`);
+    return;
+  }
   const url = `https://graph.facebook.com/v17.0/${phone_number_id}/messages`;
   try {
     const response = await fetch(url, {
@@ -1343,8 +1392,8 @@ async function sendWhatsAppMessage(to: string, text: string, settings: { access_
     } else {
       console.log(`[WhatsApp API Success] Successfully dispatched reply to [+${to}]. API response:`, bodyText);
     }
-  } catch (err) {
-    console.error(`[WhatsApp API Exception] Web/network fetch call to Meta Graph API failed for ${to}:`, err);
+  } catch (err: any) {
+    console.error(`[WhatsApp API Exception] Web/network fetch call to Meta Graph API failed for ${to}:`, err.message);
   }
 }
 
@@ -1451,15 +1500,24 @@ app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
       const accessToken = settings?.access_token || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
       const phoneNumberId = settings?.phone_number_id || recipientPhoneId || process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.META_PHONE_NUMBER_ID;
       const isWebhookActive = settings ? settings.is_active !== false : true;
+      const provider = settings?.provider || 'meta';
 
-      if (isWebhookActive && accessToken && phoneNumberId) {
-        console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Graph API using Phone ID [${phoneNumberId}]...`);
-        await sendWhatsAppMessage(cleanPhone, botResponse, {
-          access_token: accessToken,
-          phone_number_id: phoneNumberId
-        });
+      if (isWebhookActive) {
+        if (provider === 'render' && settings?.render_server_url) {
+          console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Render Gateway [${settings.render_server_url}]...`);
+          await sendWhatsAppMessage(cleanPhone, botResponse, settings);
+        } else if (provider === 'meta' && accessToken && phoneNumberId) {
+          console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Graph API using Phone ID [${phoneNumberId}]...`);
+          await sendWhatsAppMessage(cleanPhone, botResponse, {
+            access_token: accessToken,
+            phone_number_id: phoneNumberId,
+            provider: 'meta'
+          });
+        } else {
+          console.log(`[WhatsApp Webhook Simulated] Replayed [+${cleanPhone}]: "${botResponse}" (Real API skipped: provider=${provider}, url=${settings?.render_server_url}, token=${!!accessToken}, phone=${!!phoneNumberId})`);
+        }
       } else {
-        console.log(`[WhatsApp Webhook Simulated] Replayed [+${cleanPhone}]: "${botResponse}" (Real API skipped: active=${isWebhookActive}, token=${!!accessToken}, phone=${!!phoneNumberId})`);
+        console.log(`[WhatsApp Webhook Simulated] Replayed [+${cleanPhone}]: "${botResponse}" (Webhook disabled)`);
       }
     }
 
