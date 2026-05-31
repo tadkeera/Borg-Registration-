@@ -545,7 +545,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
 
                           {/* Payment status */}
                           <td className="px-4 py-3 whitespace-nowrap text-center">
-                            {isAdmin ? (
+                            {isAdmin || role === 'receptionist' ? (
                               <select
                                 value={b.payment_status}
                                 onChange={(e) => handleUpdatePayment(b.id, e.target.value as PaymentStatus)}
@@ -559,7 +559,9 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                               >
                                 <option value="pending">⏳ معلق</option>
                                 <option value="paid">✅ مسدد</option>
-                                <option value="cancelled">❌ ملغي</option>
+                                {(isAdmin || b.payment_status === 'cancelled') && (
+                                  <option value="cancelled">❌ ملغي</option>
+                                )}
                               </select>
                             ) : (
                               <span className={`inline-flex px-25 py-0.5 rounded text-[10px] font-bold ${
@@ -581,7 +583,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
 
                           {/* Visit status */}
                           <td className="px-4 py-3 whitespace-nowrap text-center">
-                            {isAdmin ? (
+                            {isAdmin || role === 'receptionist' ? (
                               <select
                                 value={b.status}
                                 onChange={(e) => handleUpdateStatus(b.id, e.target.value as BookingStatus)}
@@ -595,7 +597,9 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                               >
                                 <option value="pending">⏳ انتظار</option>
                                 <option value="confirmed">👥 مؤكد</option>
-                                <option value="cancelled">🚫 ملغي</option>
+                                {(isAdmin || b.status === 'cancelled') && (
+                                  <option value="cancelled">🚫 ملغي</option>
+                                )}
                               </select>
                             ) : (
                               <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${

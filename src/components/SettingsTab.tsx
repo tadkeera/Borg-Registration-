@@ -8,7 +8,7 @@ import { WhatsAppSettings } from '../types';
 import { 
   Settings, Shield, Key, Eye, CheckCircle, RefreshCcw, Send, 
   CalendarDays, Loader2, Sparkles, AlertCircle, FileText, 
-  Plus, Trash2, Save, Edit3, ArrowRight
+  Plus, Trash2, Save, Edit3, ArrowRight, Download
 } from 'lucide-react';
 
 interface SettingsTabProps {
@@ -41,6 +41,10 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
   const [cronLoading, setCronLoading] = useState<string | null>(null);
   const [cronResult, setCronResult] = useState({ type: '', text: '' });
 
+  // Load last weekly report
+  const [weeklyReport, setWeeklyReport] = useState<any>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+
   // Load WhatsApp settings
   const fetchSettings = async () => {
     try {
@@ -57,8 +61,26 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
     }
   };
 
+  const fetchLastWeeklyReport = async () => {
+    setReportLoading(true);
+    try {
+      const res = await fetch('/api/cron/last-weekly-report');
+      const data = await res.json();
+      if (data.success && data.report) {
+         setWeeklyReport(data.report);
+      } else {
+         setWeeklyReport(null);
+      }
+    } catch (err) {
+      console.error('Error fetching last weekly report:', err);
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchSettings();
+    fetchLastWeeklyReport();
   }, []);
 
   const handleAddNewCard = () => {
@@ -203,6 +225,7 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
         text: data.message || 'تم إعادة تهيئة الدورة الأسبوعية بنجاح.'
       });
       onReloadAllData();
+      fetchLastWeeklyReport();
     } catch (err: any) {
       setCronResult({
         type: 'danger',
@@ -211,6 +234,22 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
     } finally {
       setCronLoading(null);
     }
+  };
+
+  const handleDownloadHtmlReport = () => {
+    if (!weeklyReport || !weeklyReport.htmlReport) return;
+    
+    const blob = new Blob([weeklyReport.htmlReport], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    
+    const dateStr = weeklyReport.generatedAt ? weeklyReport.generatedAt.slice(0, 10) : 'report';
+    link.href = url;
+    link.download = `weekly-reset-report-${dateStr}.html`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   if (showWaApiSettings) {
@@ -571,6 +610,87 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
                     'تشغيل Cron Job البداية الأسبوعية الجديدة 🗓️'
                   )}
                 </button>
+
+                {/* Weekly report UI representation */}
+                {reportLoading ? (
+                  <div className="flex items-center justify-center py-4 text-xs font-bold text-slate-500 gap-2 border-t border-slate-100 mt-3 pt-3">
+                    <Loader2 className="animate-spin h-4 w-4 text-indigo-500" />
+                    <span>جاري تحميل التقرير الأسبوعي الفائت...</span>
+                  </div>
+                ) : weeklyReport ? (
+                  <div className="mt-4 border-t border-slate-100 pt-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black text-slate-700 flex items-center gap-1.5">
+                        <FileText className="h-4 w-4 text-blue-600" />
+                        تقرير الحصيلة الأسبوعية الفائتة 📊
+                      </span>
+                      <button
+                        onClick={handleDownloadHtmlReport}
+                        className="flex items-center gap-1 text-[11px] font-black text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg cursor-pointer transition-colors"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        تنزيل التقرير (HTML)
+                      </button>
+                    </div>
+
+                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 grid grid-cols-2 gap-2 text-[10px] font-bold text-slate-600 font-sans">
+                      <div>
+                        <span className="text-slate-400 block font-normal">تاريخ وزمن التصفير:</span>
+                        <span className="text-slate-800">{weeklyReport.dateStr}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block font-normal">إجمالي الحجوزات الممسوحة:</span>
+                        <span className="text-rose-600 font-black text-xs block mt-0.5">{weeklyReport.totalDeleted} حجز</span>
+                      </div>
+                    </div>
+
+                    {/* Doctors listing inside the last week report */}
+                    <div className="space-y-2 mt-2 max-h-[250px] overflow-y-auto pr-1">
+                      {weeklyReport.doctorsList && weeklyReport.doctorsList.map((doc: any, dIdx: number) => (
+                        <div key={dIdx} className="border border-slate-100 rounded-lg p-2.5 bg-white space-y-2">
+                          <div className="flex items-center justify-between text-[11px] font-black">
+                            <span className="text-slate-800">د. {doc.name} <span className="text-[9px] font-normal text-slate-400">({doc.specialty})</span></span>
+                            <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md text-[9px]">حجوزات: {doc.bookingsCount}</span>
+                          </div>
+
+                          {doc.bookingsCount === 0 ? (
+                            <p className="text-[10px] text-slate-400 font-bold bg-slate-50 p-1.5 text-center rounded">
+                              لا توجد حجوزات ملغية سابقة لهذا الطبيب.
+                            </p>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-right text-[10px] text-slate-500 border-collapse">
+                                <thead>
+                                  <tr className="border-b border-slate-100 text-slate-400">
+                                    <th className="pb-1 text-right font-normal">الرقم</th>
+                                    <th className="pb-1 text-right font-normal font-sans">المريض</th>
+                                    <th className="pb-1 text-right font-normal font-sans">التاريخ</th>
+                                    <th className="pb-1 text-right font-normal font-sans">تليفون الحجز</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {doc.bookings.map((b: any, bIdx: number) => (
+                                    <tr key={bIdx} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50">
+                                      <td className="py-1 font-mono font-black text-indigo-600">#{b.queue_number}</td>
+                                      <td className="py-1 font-black text-slate-800">{b.patient_name}</td>
+                                      <td className="py-1">{b.booking_date}</td>
+                                      <td className="py-1 font-mono text-slate-505" dir="ltr">{b.patient_phone}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                  </div>
+                ) : (
+                  <div className="mt-4 border-t border-dashed border-slate-200 pt-4 text-center text-slate-400 text-[10px] font-bold">
+                    لا يوجد تقرير أسبوعي محفوظ حتى الآن. سيتم إنشاء أول تقرير عند تشغيل Cron Job البداية الأسبوعية الجديدة.
+                  </div>
+                )}
               </div>
 
             </div>
