@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import { DbState, Doctor, Schedule, Booking, WhatsAppLog, BotSession, BotState, BookingStatus, PaymentStatus, WhatsAppSettings, SystemSettings } from './src/types';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
+import workflowsRouter, { triggerAppointmentReminderWorkflow, triggerPendingTimeoutWorkflow } from './server/workflows';
 
 // Load environment variables from .env if present
 dotenv.config();
@@ -142,6 +143,9 @@ function webhookRateLimit(req: express.Request, res: express.Response, next: exp
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', serverTime: getYemenTime().toISOString(), timezone: 'Asia/Aden (UTC+3)' });
 });
+
+// Configure and mount Vercel Workflow endpoints
+app.use(workflowsRouter);
 
 // Supabase configuration verification endpoint
 app.get('/api/supabase-status', async (req, res) => {
@@ -722,6 +726,9 @@ app.post('/api/bookings', async (req, res) => {
       throw error;
     }
 
+    // Trigger Vercel/QStash Appointment Reminder Workflow in background
+    triggerAppointmentReminderWorkflow(data.id);
+
     res.status(201).json({
       ...data,
       doctor_name: data.doctor ? data.doctor.name : '',
@@ -751,6 +758,11 @@ app.put('/api/bookings/:id', async (req, res) => {
       .single();
 
     if (error) throw error;
+
+    if (status === 'confirmed') {
+      triggerAppointmentReminderWorkflow(id);
+    }
+
     res.json({
       ...data,
       doctor_name: data.doctor ? data.doctor.name : '',
@@ -2150,6 +2162,10 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
       .select('*')
       .eq('id', insertedBooking.id)
       .single();
+
+    // Trigger Vercel/QStash Workflows in background asynchronously
+    triggerAppointmentReminderWorkflow(insertedBooking.id);
+    triggerPendingTimeoutWorkflow(insertedBooking.id);
 
     const finalQueue = finalisedBooking?.queue_number || 1;
 
