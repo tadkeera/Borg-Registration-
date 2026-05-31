@@ -137,7 +137,7 @@ export default function DoctorsTab({ doctors, role, onAddDoctor, onEditDoctor, o
       {success && <p id="doc-success-global" className="p-3 text-xs bg-emerald-50 text-emerald-700 rounded-xl border border-emerald-100">{success}</p>}
 
       {/* FULL WIDTH TABLE LIST */}
-      <div id="doctors-list-panel" className="bg-white border border-slate-100 rounded-2xl shadow-sm overflow-hidden">
+      <div id="doctors-list-panel" className="bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-md hover:border-slate-200/80 transition-all duration-300 overflow-hidden">
         <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/40">
           <h3 className="text-xs font-black text-slate-800">أعضاء الكادر الطبي النشط ({doctors.length})</h3>
           <span className="text-[10px] bg-slate-100 px-2 py-0.5 text-slate-500 rounded font-bold">برج الأطباء</span>
@@ -160,7 +160,7 @@ export default function DoctorsTab({ doctors, role, onAddDoctor, onEditDoctor, o
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
                 {doctors.map((doc) => (
-                  <tr key={doc.id} id={`row-${doc.id}`} className="hover:bg-slate-50/40 transition-colors">
+                  <tr key={doc.id} id={`row-${doc.id}`} className="hover:bg-slate-50/70 transition-all duration-150">
                     <td className="px-5 py-4 whitespace-nowrap">
                       <div className="flex items-center gap-2">
                         <div className="text-xs font-black text-slate-800">{doc.name}</div>

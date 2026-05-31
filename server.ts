@@ -1681,6 +1681,11 @@ function getGroupedDatesForDoctor(
     return new Date(a.date).getTime() - new Date(b.date).getTime();
   });
 
+  if (options.length === 0) {
+    const prompt = `عذرًا، الطبيب الذي اخترته (*${doctor.name}*) ليس لديه أي مواعيد عيادة متاحة لبقية هذا الأسبوع. نسعد بخدمتك وتسجيلك مجددًا مع بداية الأسبوع القادم، كما يسعدنا أيضًا مساعدتك في اختيار أي طبيب آخر متاح بكل سرور.`;
+    return { prompt, options };
+  }
+
   let count = 1;
   let prompt = `عيادات الطبيب *${doctor.name}* متوفرة في الأيام التالية. يرجى حجز اليوم بكتابة رقمه المقابل:`;
 
@@ -1897,7 +1902,14 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
     }
 
     session.selected_shift = null;
-    const { prompt } = getGroupedDatesForDoctor(doctor, activeSchedules || []);
+    const { prompt, options } = getGroupedDatesForDoctor(doctor, activeSchedules || []);
+    if (options.length === 0) {
+      let failPrompt = `عذرًا، الطبيب الذي اخترته (*${doctor.name}*) ليس لديه أي مواعيد عيادة متاحة لبقية هذا الأسبوع. نسعد بخدمتك وتسجيلك مجددًا مع بداية الأسبوع القادم، كما يمكنك اختيار أحد زملائه الأطباء البدلاء من القائمة لتنسيق موعدك:\n`;
+      activeDocs.forEach((doc, idx) => {
+        failPrompt += `\n*${idx + 1}* - ${doc.name} (${doc.specialty})`;
+      });
+      return outputReply(failPrompt, 'SELECTING_DOCTOR');
+    }
     return outputReply(prompt, 'SELECTING_DAY');
   }
 
