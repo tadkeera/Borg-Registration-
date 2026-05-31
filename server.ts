@@ -1018,6 +1018,296 @@ app.post('/api/cron/reset-weekly', async (req, res) => {
 });
 
 
+/**
+ * -------------------------------------------------------------------------
+ * INTEGRATED AUTOMATIC WORKFLOWS FOR VERCEL CRON TRIGGERS
+ * -------------------------------------------------------------------------
+ */
+
+// 1. Appointment Reminder (Sends WhatsApp reminder 24 hours prior)
+app.all('/api/cron/reminders', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (process.env.NODE_ENV === 'production' && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const supabase = getSupabase();
+    
+    // Compute tomorrow's date string in Yemen timezone (UTC+3)
+    const utcNow = new Date().getTime();
+    const yemenTomorrow = new Date(utcNow + (3 * 60 * 60 * 1000) + (24 * 60 * 60 * 1000));
+    const tomorrowStr = yemenTomorrow.toISOString().split('T')[0];
+
+    console.log(`[Reminder Express Cron] Sweeping bookings scheduled for tomorrow: ${tomorrowStr}`);
+
+    const { data: bookings, error } = await supabase
+      .from('bookings')
+      .select('*, doctor:doctors(name)')
+      .eq('booking_date', tomorrowStr)
+      .eq('status', 'confirmed')
+      .eq('verified_by_whatsapp', false);
+
+    if (error) throw error;
+
+    if (!bookings || bookings.length === 0) {
+      return res.json({ success: true, message: 'No reminders to send for tomorrow.', date: tomorrowStr });
+    }
+
+    let sentCount = 0;
+    for (const b of bookings) {
+      const patientPhone = b.patient_phone;
+      const patientName = b.patient_name;
+      const doctorName = b.doctor ? b.doctor.name : 'الطبيب المختص';
+      const queueNumber = b.queue_number;
+      const shift = b.shift === 'Evening' ? 'المسائية' : 'الصباحية';
+
+      const arabicMessage = `🚨 *تذكير بموعد حجز الطبيب*\n` +
+        `مرحباً بك يا ${patientName}،\n\n` +
+        `نود تذكيرك بموعد حجزك المؤكد غداً *(${tomorrowStr})* لدى مستشفى برج الأطباء:\n\n` +
+        `👨‍⚕️ *الطبيب:* د. ${doctorName}\n` +
+        `🔢 *رقم دورك في القائمة:* ${queueNumber}\n` +
+        `⏰ *الفترة:* ${shift} (يرجى الحضور في الوقت المحدد وتأكيد حضوركم بجهة الاستقبال)\n\n` +
+        `نتمنى لكم دوام الصحة والعافية.\n` +
+        `🏥 *مستشفى برج الأطباء - Borg Alatiba*`;
+
+      let sentSuccess = false;
+      const provider = process.env.WHATSAPP_PROVIDER || 'ultramsg';
+
+      if (provider === 'whapi') {
+        const whapiToken = process.env.WHAPI_TOKEN;
+        const resWhapi = await fetch('https://gate.whapi.cloud/messages/text', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${whapiToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            to: patientPhone.replace('+', ''),
+            body: arabicMessage
+          })
+        });
+        sentSuccess = resWhapi.ok;
+      } else {
+        const instanceId = process.env.ULTRAMSG_INSTANCE_ID;
+        const ultraToken = process.env.ULTRAMSG_TOKEN;
+        
+        const resUltra = await fetch(`https://api.ultramsg.com/${instanceId}/messages/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            token: ultraToken || '',
+            to: patientPhone,
+            body: arabicMessage
+          })
+        });
+        sentSuccess = resUltra.ok;
+      }
+
+      if (sentSuccess) {
+        await supabase
+          .from('bookings')
+          .update({ verified_by_whatsapp: true })
+          .eq('id', b.id);
+        sentCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully processed reminders!`,
+      sentCount,
+      totalToSend: bookings.length
+    });
+  } catch (err: any) {
+    console.error('[Reminder Express Cron Exception]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Weekly Bookings Cleanup & Administration Email Report
+app.all('/api/cron/cleanup', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (process.env.NODE_ENV === 'production' && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const supabase = getSupabase();
+    const resendApiKey = process.env.RESEND_API_KEY;
+    const adminEmail = process.env.ADMIN_REPORT_EMAIL || 'waleedsaleemmohammed@gmail.com';
+
+    // 1. Fetch total counts/breakdowns before wipe
+    const { data: bookings, error: fetchErr } = await supabase
+      .from('bookings')
+      .select('*, doctor:doctors(name)');
+
+    if (fetchErr) throw fetchErr;
+
+    const totalBookings = bookings?.length || 0;
+    const confirmedCount = bookings?.filter(b => b.status === 'confirmed').length || 0;
+    const pendingCount = bookings?.filter(b => b.status === 'pending').length || 0;
+    const cancelledCount = bookings?.filter(b => b.status === 'cancelled').length || 0;
+    const paidCount = bookings?.filter(b => b.payment_status === 'paid').length || 0;
+
+    const doctorStats: Record<string, number> = {};
+    bookings?.forEach(b => {
+      const docName = b.doctor ? b.doctor.name : 'طبيب محذوف';
+      doctorStats[docName] = (doctorStats[docName] || 0) + 1;
+    });
+
+    let doctorHtmlList = '';
+    for (const [name, count] of Object.entries(doctorStats)) {
+      doctorHtmlList += `<li>👨‍⚕️ د. ${name}: ${count} حجز</li>`;
+    }
+
+    // 2. Erase Bookings records from Supabase
+    const { error: deleteErr } = await supabase
+      .from('bookings')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+
+    if (deleteErr) throw deleteErr;
+
+    // Reset weekly capacity using DB RPC trigger
+    const { error: rpcErr } = await supabase.rpc('reset_weekly_schedules_and_queues');
+    if (rpcErr) {
+      console.warn('RPC execution missed in Express context, performing direct DB fallbacks...', rpcErr);
+      const { data: schedules } = await supabase.from('schedules').select('*');
+      if (schedules) {
+        for (const s of schedules) {
+          await supabase.from('schedules').update({ available_capacity: s.max_capacity }).eq('id', s.id);
+        }
+      }
+      await supabase.from('bot_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    }
+
+    // 3. Resend Dispatch
+    let emailStatus = 'Skipped (Missing RESEND_API_KEY)';
+    if (resendApiKey) {
+      const emailBody = `
+        <div style="direction: rtl; text-align: right; font-family: sans-serif; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; max-width: 550px; margin: 0 auto; background-color: #ffffff;">
+          <h2 style="color: #1d4ed8; border-bottom: 2px solid #1d4ed8; padding-bottom: 10px;">📊 تقرير الحجوزات الأسبوعي - مستشفى برج الأطباء</h2>
+          <p>تحية طيبة وبعد، لقد تم الانتهاء من عملية الضبط والتنظيف الأسبوعية المقررة بنحو تلقائي.</p>
+          <p>📋 <strong>تفاصيل إحصائيات الأسبوع المنصرم:</strong></p>
+          <ul>
+            <li>إجمالي الطلبات: <strong>${totalBookings} حجز</strong></li>
+            <li>الحجوزات المؤكدة: <strong>${confirmedCount}</strong></li>
+            <li>الحجوزات قيد الانتظار: <strong>${pendingCount}</strong></li>
+            <li>الحجوزات الملغاة: <strong>${cancelledCount}</strong></li>
+            <li>المدفوعات المكتملة: <strong>${paidCount}</strong></li>
+          </ul>
+          <h4 style="color: #1d4ed8;">🩺 تفصيل الحجوزات حسب العيادات الطبية:</h4>
+          <ul>
+            ${doctorHtmlList || '<li>لا توجد حجوزات عيادية هذا الأسبوع.</li>'}
+          </ul>
+          <p style="font-size: 11px; color: #94a3b8; text-align: center; margin-top: 30px;">نظام إدارة حجز مستشفى برج الأطباء التلقائي</p>
+        </div>
+      `;
+
+      const resEmail = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${resendApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: 'نظام برج الأطباء <reports@resend.dev>',
+          to: [adminEmail],
+          subject: '📊 التقرير الأسبوعي للحجوزات - مستشفى برج الأطباء',
+          html: emailBody
+        })
+      });
+
+      emailStatus = resEmail.ok ? 'Sent successfully' : `Resend failed. Code: ${resEmail.status}`;
+    }
+
+    res.json({
+      success: true,
+      message: 'Weekly schedule & capacity setup cleaned successfully!',
+      statistics: {
+        totalBookings,
+        confirmedCount,
+        pendingCount,
+        cancelledCount,
+        paidCount
+      },
+      emailStatus
+    });
+  } catch (err: any) {
+    console.error('[Weekly Reset Express Cron Exception]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Pending Booking Timeout (Erase unconfirmed bookings older than 48 hours)
+app.all('/api/cron/pending-timeout', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (process.env.NODE_ENV === 'production' && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const supabase = getSupabase();
+    const thresholdDate = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+
+    console.log(`[Pending Express Cron Sweep] Sweeping bookings created before: ${thresholdDate}`);
+
+    const { data: expired, error: fetchErr } = await supabase
+      .from('bookings')
+      .select('id, schedule_id, patient_name')
+      .eq('status', 'pending')
+      .lt('created_at', thresholdDate);
+
+    if (fetchErr) throw fetchErr;
+
+    if (!expired || expired.length === 0) {
+      return res.json({ success: true, message: 'No expired pending bookings found.' });
+    }
+
+    let releasedCount = 0;
+    for (const b of expired) {
+      // 1. Recover schedule capacity
+      const { data: schedule } = await supabase
+        .from('schedules')
+        .select('available_capacity, max_capacity')
+        .eq('id', b.schedule_id)
+        .single();
+
+      if (schedule) {
+        const nextCapacity = Math.min(schedule.max_capacity, schedule.available_capacity + 1);
+        await supabase
+          .from('schedules')
+          .update({ available_capacity: nextCapacity })
+          .eq('id', b.schedule_id);
+      }
+
+      // 2. Erase row from DB
+      const { error: deleteErr } = await supabase
+        .from('bookings')
+        .delete()
+        .eq('id', b.id);
+
+      if (!deleteErr) {
+        releasedCount++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Pending booking timeout sweep executed successfully!',
+      statistics: {
+        totalFound: expired.length,
+        successfullyReleased: releasedCount
+      }
+    });
+  } catch (err: any) {
+    console.error('[Pending Timeout Express Cron Exception]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // -------------------------------------------------------------------------
 // OFFICIAL META WHATSAPP WEBHOOK ROUTE & MESSAGING HANDLERS
 // -------------------------------------------------------------------------

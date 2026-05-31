@@ -1,5 +1,19 @@
 {
   "version": 2,
+  "crons": [
+    {
+      "path": "/api/cron/reminders",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/cleanup",
+      "schedule": "0 19 * * 4"
+    },
+    {
+      "path": "/api/cron/pending-timeout",
+      "schedule": "0 */4 * * *"
+    }
+  ],
   "builds": [
     {
       "src": "package.json",
