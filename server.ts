@@ -1330,7 +1330,10 @@ async function sendWhatsAppMessage(
   const provider = settings?.provider || 'meta';
   
   if (provider === 'render' || provider === 'huggingface') {
-    const renderUrl = settings?.render_server_url || '';
+    let renderUrl = settings?.render_server_url || '';
+    if (provider === 'huggingface') {
+      renderUrl = 'https://waleedoo-borg-whatsapp-server-1.hf.space';
+    }
     if (!renderUrl) {
       console.error('[WhatsApp Device Error] Connect server url is missing in settings');
       return;
@@ -1503,9 +1506,9 @@ app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
       const provider = settings?.provider || 'meta';
 
       if (isWebhookActive) {
-        if ((provider === 'render' || provider === 'huggingface') && settings?.render_server_url) {
-          console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Custom Gateway [${settings.render_server_url}]...`);
-          await sendWhatsAppMessage(cleanPhone, botResponse, settings);
+        if ((provider === 'render' || provider === 'huggingface') && (settings?.render_server_url || provider === 'huggingface')) {
+          console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Custom Gateway...`);
+          await sendWhatsAppMessage(cleanPhone, botResponse, settings || { provider: 'huggingface' });
         } else if (provider === 'meta' && accessToken && phoneNumberId) {
           console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Graph API using Phone ID [${phoneNumberId}]...`);
           await sendWhatsAppMessage(cleanPhone, botResponse, {
@@ -2168,13 +2171,51 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
 نتمنى لكم دوام الصحة والعافية.
 (يرجى تأكيد الحجز بواسطة دفع رسوم التسجيل خلال يومين من هذا التاريخ ${deadlineStr}، وإلا سيعتبر الحجز لاغياً، وشكراً).`;
 
-    // Clear session state
-    await supabase
-      .from('bot_sessions')
-      .delete()
-      .eq('phone', cleanPhone);
+    // Clear session details to reset for next interaction, keeping state as COMPLETED
+    session.patient_name = null;
+    session.selected_doctor_id = null;
+    session.selected_schedule_id = null;
+    session.selected_day_offset = null;
+    session.selected_shift = null;
+    session.selected_date = null;
 
-    return outputReply(successMsg, 'IDLE');
+    // Trigger Message B (Save Contact) separately 1.5 seconds after Message A
+    setTimeout(async () => {
+      try {
+        const { data: wsData } = await supabase
+          .from('whatsapp_settings')
+          .select('*')
+          .eq('is_active', true)
+          .limit(1)
+          .maybeSingle();
+
+        const msgB = `💡 *عزيزنا المريض:*\n\nلضمان استمرار تلقي إشعارات المواعيد والتحديثات الطبية الهامة الخاصة بكم وبأعلى جودة، يرجى التكرم بـ *حفظ رقم هاتف المستشفى هذا ضمن جهات الاتصال الخاصة بكم*.\n\nشاكرين لكم حسن تعاونكم وتفهمكم.\n*إدارة مستشفى برج الاطباء*`;
+
+        console.log(`[WhatsApp Bot] Sending post-confirmation "Save Contact" follow-up (Message B) to [+${cleanPhone}]...`);
+
+        // Log Message B to whatsapp_logs as well so it's tracked in the system
+        await supabase.from('whatsapp_logs').insert([{
+          phone: cleanPhone,
+          direction: 'out',
+          message: msgB,
+          timestamp: getYemenTime().toISOString()
+        }]);
+
+        // Send Message B using sendWhatsAppMessage helper
+        if (wsData) {
+          await sendWhatsAppMessage(cleanPhone, msgB, wsData);
+        } else {
+          await sendWhatsAppMessage(cleanPhone, msgB, {
+            provider: 'huggingface',
+            render_server_url: 'https://waleedoo-borg-whatsapp-server-1.hf.space'
+          });
+        }
+      } catch (err: any) {
+        console.error('[WhatsApp Bot Error] Failed to send post-confirmation Message B:', err.message);
+      }
+    }, 1500);
+
+    return outputReply(successMsg, 'COMPLETED');
   }
 
   return outputReply("مرحباً بك. يرجى إرسال كلمة 'تسجيل' لبدء حجز موعد طبي جديد.", 'IDLE');

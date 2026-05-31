@@ -88,7 +88,10 @@ export default async function handler(req: any, res: any) {
       const provider = activeSettings?.provider || 'meta';
 
       if (provider === 'render' || provider === 'huggingface') {
-        const renderServerUrl = activeSettings?.render_server_url || '';
+        let renderServerUrl = activeSettings?.render_server_url || '';
+        if (provider === 'huggingface') {
+          renderServerUrl = 'https://waleedoo-borg-whatsapp-server-1.hf.space';
+        }
         if (renderServerUrl) {
           const cleanUrl = renderServerUrl.endsWith('/') ? `${renderServerUrl}api/send-message` : `${renderServerUrl}/api/send-message`;
           try {
@@ -100,7 +103,8 @@ export default async function handler(req: any, res: any) {
                 message: arabicMessage
               })
             });
-            sentSuccess = resRender.ok;
+            const responseData = await resRender.json().catch(() => ({}));
+            sentSuccess = resRender.ok || responseData.success === true;
           } catch (err: any) {
             console.error('[Reminder Cron Standalone Gateway Exception]', err.message);
           }
