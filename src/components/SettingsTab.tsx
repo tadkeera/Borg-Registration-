@@ -24,8 +24,9 @@ interface WaCard {
   phone_number_id: string;
   is_active: boolean;
   isEditing: boolean;
-  provider?: 'meta' | 'render';
+  provider?: 'meta' | 'render' | 'huggingface';
   render_server_url?: string;
+  huggingface_server_url?: string;
 }
 
 export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps) {
@@ -71,7 +72,8 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
         is_active: true,
         isEditing: true,
         provider: 'meta',
-        render_server_url: ''
+        render_server_url: '',
+        huggingface_server_url: ''
       }
     ]);
   };
@@ -113,7 +115,8 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
           phone_number_id: card.phone_number_id,
           is_active: card.is_active,
           provider: card.provider || 'meta',
-          render_server_url: card.render_server_url || ''
+          render_server_url: card.render_server_url || '',
+          huggingface_server_url: card.huggingface_server_url || ''
         })
       });
 
@@ -321,11 +324,11 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
                         type="radio"
                         name={`wa-provider-${index}`}
                         disabled={!card.isEditing || !isAdmin}
-                        checked={card.provider === 'render'}
-                        onChange={() => handleCardInputChange(index, 'provider', 'render')}
+                        checked={card.provider === 'huggingface' || card.provider === 'render'}
+                        onChange={() => handleCardInputChange(index, 'provider', 'huggingface')}
                         className="h-4 w-4 text-blue-600 focus:ring-blue-500"
                       />
-                      بوابة Render المجانية (Whatsapp Web Bot)
+                      بوابة Hugging Face المجانية (Hugging Face Spaces)
                     </label>
                   </div>
                 </div>
@@ -364,15 +367,24 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
                   ) : (
                     <div>
                       <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
-                        رابط خادم Render المضيف للبوت <span className="text-red-500">*</span>
+                        رابط خادم Hugging Face Spaces المضيف للبوت <span className="text-red-500">*</span>
                       </label>
                       <input
                         type="url"
                         required
                         disabled={!card.isEditing || !isAdmin}
-                        value={card.render_server_url || ''}
-                        onChange={(e) => handleCardInputChange(index, 'render_server_url', e.target.value)}
-                        placeholder="e.g. https://your-server.onrender.com"
+                        value={card.huggingface_server_url || card.render_server_url || ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          const updated = [...cards];
+                          updated[index] = {
+                            ...updated[index],
+                            huggingface_server_url: val,
+                            render_server_url: val
+                          };
+                          setCards(updated);
+                        }}
+                        placeholder="e.g. https://username-space.hf.space"
                         className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono"
                       />
                     </div>

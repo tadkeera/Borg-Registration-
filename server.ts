@@ -1323,20 +1323,20 @@ async function sendWhatsAppMessage(
   settings: { 
     access_token?: string; 
     phone_number_id?: string; 
-    provider?: 'meta' | 'render'; 
+    provider?: 'meta' | 'render' | 'huggingface'; 
     render_server_url?: string; 
   }
 ) {
   const provider = settings?.provider || 'meta';
   
-  if (provider === 'render') {
+  if (provider === 'render' || provider === 'huggingface') {
     const renderUrl = settings?.render_server_url || '';
     if (!renderUrl) {
-      console.error('[WhatsApp Render Device Error] Render server url is missing in settings');
+      console.error('[WhatsApp Device Error] Connect server url is missing in settings');
       return;
     }
     const cleanUrl = renderUrl.endsWith('/') ? `${renderUrl}api/send-message` : `${renderUrl}/api/send-message`;
-    console.log(`[WhatsApp API Router] Routing message to Render custom gateway: ${cleanUrl} for [+${to}]`);
+    console.log(`[WhatsApp API Router] Routing message to custom gateway: ${cleanUrl} for [+${to}]`);
     try {
       const response = await fetch(cleanUrl, {
         method: 'POST',
@@ -1350,12 +1350,12 @@ async function sendWhatsAppMessage(
       });
       const bodyText = await response.text();
       if (!response.ok) {
-        console.error(`[WhatsApp Render Error] Render API rejected message for ${to}. Http status: ${response.status}. Response:`, bodyText);
+        console.error(`[WhatsApp Gateway Error] Standalone API rejected message for ${to}. Http status: ${response.status}. Response:`, bodyText);
       } else {
-        console.log(`[WhatsApp Render Success] Dispatched message to [+${to}] via Render successfully! Response:`, bodyText);
+        console.log(`[WhatsApp Gateway Success] Dispatched message to [+${to}] via Standalone URL successfully! Response:`, bodyText);
       }
     } catch (err: any) {
-      console.error(`[WhatsApp Render Exception] Failed to POST to Render gateway:`, err.message);
+      console.error(`[WhatsApp Gateway Exception] Failed to POST to standalone gateway:`, err.message);
     }
     return;
   }
@@ -1503,8 +1503,8 @@ app.post('/api/webhook/whatsapp', webhookRateLimit, async (req, res) => {
       const provider = settings?.provider || 'meta';
 
       if (isWebhookActive) {
-        if (provider === 'render' && settings?.render_server_url) {
-          console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Render Gateway [${settings.render_server_url}]...`);
+        if ((provider === 'render' || provider === 'huggingface') && settings?.render_server_url) {
+          console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Custom Gateway [${settings.render_server_url}]...`);
           await sendWhatsAppMessage(cleanPhone, botResponse, settings);
         } else if (provider === 'meta' && accessToken && phoneNumberId) {
           console.log(`[WhatsApp Webhook] Dispatching active API call for [+${cleanPhone}] via Graph API using Phone ID [${phoneNumberId}]...`);

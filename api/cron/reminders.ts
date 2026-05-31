@@ -87,7 +87,7 @@ export default async function handler(req: any, res: any) {
       let sentSuccess = false;
       const provider = activeSettings?.provider || 'meta';
 
-      if (provider === 'render') {
+      if (provider === 'render' || provider === 'huggingface') {
         const renderServerUrl = activeSettings?.render_server_url || '';
         if (renderServerUrl) {
           const cleanUrl = renderServerUrl.endsWith('/') ? `${renderServerUrl}api/send-message` : `${renderServerUrl}/api/send-message`;
@@ -102,7 +102,7 @@ export default async function handler(req: any, res: any) {
             });
             sentSuccess = resRender.ok;
           } catch (err: any) {
-            console.error('[Reminder Cron Render Gateway Exception]', err.message);
+            console.error('[Reminder Cron Standalone Gateway Exception]', err.message);
           }
         }
       } else if (provider === 'meta') {
