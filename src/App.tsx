@@ -12,7 +12,7 @@ import BookingsTab from './components/BookingsTab';
 import SettingsTab from './components/SettingsTab';
 import SimulatorTab from './components/SimulatorTab';
 import AccessSettingsTab from './components/AccessSettingsTab';
-import { ShieldCheck, UserCheck, Stethoscope, BookOpen, Clock, PhoneCall, HelpCircle, LogOut } from 'lucide-react';
+import { ShieldCheck, UserCheck, Stethoscope, BookOpen, Clock, PhoneCall, HelpCircle, LogOut, ClipboardList, CalendarDays, Bot, CloudCog, Lock, Users, User } from 'lucide-react';
 import { HOSPITAL_LOGO } from './utils/constants';
 
 export default function App() {
@@ -59,6 +59,7 @@ export default function App() {
 
   // Loading/Refresh triggering helpers
   const [loading, setLoading] = useState(true);
+  const [showUserDropdown, setShowUserDropdown] = useState(false);
 
   const fetchAllData = async () => {
     try {
@@ -293,50 +294,70 @@ export default function App() {
     <div id="app-root-container" className="min-h-screen bg-slate-50 flex flex-col font-sans" dir="rtl">
       
       {/* 1. TOP HEADER BRAND BAR */}
-      <header id="app-header" className="bg-white border-b border-slate-100 shadow-sm sticky top-0 z-40 px-4 md:px-8 py-3.5 flex flex-col sm:flex-row items-center justify-between gap-4">
-        <div className="flex items-center space-x-3 space-x-reverse">
-          <img
-            id="brand-logo"
-            src={HOSPITAL_LOGO}
-            alt="شعار مستشفى برج الأطباء"
-            className="hospital-logo"
-            style={{ width: '56px', height: 'auto', objectFit: 'contain' }}
-            referrerPolicy="no-referrer"
-          />
-          <div>
-            <h1 id="brand-title" className="text-base md:text-lg font-black text-slate-800 leading-tight">
-              نظام إدارة التسجيل في مستشفى برج الأطباء
+      <header id="app-header" className="m-4 md:m-6 rounded-[24px] bg-white border border-slate-100 shadow-[0_15px_35px_rgba(15,76,129,0.08)] sticky top-4 z-40 px-6 py-4 flex flex-col md:flex-row items-center justify-between gap-6">
+        {/* Left/Center: Circular branding Logo and titles */}
+        <div className="flex flex-col md:flex-row items-center gap-5 space-x-reverse text-center md:text-right font-sans">
+          <div className="relative flex-shrink-0">
+            <img
+              id="brand-logo"
+              src={HOSPITAL_LOGO}
+              alt="شعار مستشفى برج الأطباء"
+              className="w-20 h-20 md:w-24 md:h-24 rounded-full border-2 border-[#0f4c81]/20 p-1 object-cover shadow-2xs"
+              referrerPolicy="no-referrer"
+            />
+          </div>
+          <div className="flex flex-col items-center md:items-start">
+            <h1 id="brand-title" className="text-xl md:text-2xl font-black text-[#0f4c81] leading-tight tracking-tight">
+              نظام إدارة التسجيل - مستشفى برج الأطباء
             </h1>
-            <p id="brand-sub" className="text-[10px] md:text-xs text-slate-450 font-bold">
-              لوحة تحكم إدارة العيادات والتنظيف الآلي وحجوزات الواتساب
+            <p id="brand-sub" className="text-sm md:text-base font-bold text-slate-700 mt-2">
+              لوحة إدارة العيادات
             </p>
           </div>
         </div>
 
-        {/* User Badge / Actions */}
-        <div className="flex items-center gap-3">
-          <div className="text-left sm:text-right font-sans">
-            <span className="block text-xs font-black text-slate-705">
-              المستخدم: {receptionistName || 'مدير مجهول'} 👥
-            </span>
-            <span id="user-role-tag" className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold ${
-              role === 'admin' ? 'bg-blue-50 text-blue-700 border border-blue-100' : 'bg-amber-50 text-amber-700 border border-amber-100'
-            }`}>
-              {role === 'admin' ? 'مدير النظام (Admin)' : 'موظف استقبال (Receptionist)'}
-            </span>
-          </div>
-
-          <div className="h-8 w-px bg-slate-100 mx-1" />
-
-          {/* Logout trigger */}
+        {/* Right Badge / Interactive User Dropdown Trigger */}
+        <div className="relative flex-shrink-0">
           <button
-            id="app-logout-btn"
-            onClick={handleLogout}
-            className="flex items-center justify-center p-2.5 rounded-xl text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"
-            title="تسجيل الخروج"
+            id="app-user-dropdown-trigger"
+            onClick={() => setShowUserDropdown(!showUserDropdown)}
+            className="flex items-center gap-2.5 px-4 py-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl border border-slate-200 transition-all shadow-2xs hover:shadow-xs font-bold text-slate-700 cursor-pointer"
+            title="معلومات الحساب"
           >
-            <LogOut className="h-5 w-5" />
+            <User className="h-5 w-5 text-[#0f4c81]" />
+            <span className="text-xs font-black">{receptionistName || 'مدير مجهول'}</span>
+            <span className="text-[10px] bg-[#0f4c81]/10 text-[#0f4c81] px-2 py-0.5 rounded-lg font-black">
+              {role === 'admin' ? 'Admin' : 'استقبال'}
+            </span>
           </button>
+
+          {showUserDropdown && (
+            <div id="user-dropdown-box" className="absolute left-0 mt-3 w-64 bg-white border border-slate-150 shadow-[0_15px_35px_rgba(0,0,0,0.1)] rounded-[20px] p-4 z-50 text-right animate-in fade-in slide-in-from-top-2 duration-150">
+              <div className="text-[11px] text-slate-400 font-bold mb-1">المستخدم الحالي</div>
+              <div className="text-base font-black text-slate-800 mb-3">{receptionistName || 'مدير مجهول'} 👥</div>
+              
+              <div className="h-px bg-slate-100 my-2.5" />
+
+              <div className="text-[11px] text-slate-400 font-bold mb-1">نوع الحساب</div>
+              <div id="dropdown-role-tag" className={`inline-flex items-center px-2.5 py-1 rounded-xl text-xs font-black ${
+                role === 'admin' ? 'bg-sky-50 text-sky-800 border border-sky-150' : 'bg-amber-50 text-[#b45309] border border-amber-150'
+              }`}>
+                {role === 'admin' ? 'مدير النظام (Admin)' : 'موظف استقبال (Receptionist)'}
+              </div>
+
+              <div className="h-px bg-slate-100 my-3.5" />
+
+              {/* Logout Button */}
+              <button
+                id="app-dropdown-logout-btn"
+                onClick={handleLogout}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl text-xs font-black transition-all shadow-2xs hover:shadow-xs cursor-pointer"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>تسجيل الخروج</span>
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -356,134 +377,174 @@ export default function App() {
         </div>
       )}
 
-      {/* 2. STATS KPI DASHBOARD SUMMARY */}
-      <section id="stats-summary" className="px-4 md:px-8 pt-6 pb-2 grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* KPI 1 */}
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
-          <div>
-            <span className="block text-[10px] md:text-xs font-bold text-slate-400 leading-none">الكادر الطبي النشط</span>
-            <span id="stat-doctors" className="block text-xl md:text-2xl font-black text-slate-800 mt-2 font-mono">
-              {activeDoctorsCount}
-            </span>
-          </div>
-          <div className="h-10 w-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center"><Stethoscope className="h-5.5 w-5.5" /></div>
-        </div>
+      {/* 2. STATS KPI DASHBOARD SUMMARY (Only visible on bookings tab) */}
+      {activeTab === 'bookings' && (
+        <section id="stats-summary" className="px-4 md:px-8 mt-5 mb-1">
+          <div className="bg-white border border-slate-100 shadow-xs rounded-[24px] p-2 md:p-3 flex flex-col md:flex-row items-stretch justify-between divide-y md:divide-y-0 md:divide-x md:divide-x-reverse divide-slate-100 max-w-7xl mx-auto">
+            
+            {/* KPI 4 (Rightmost in RTL - Index 3 visually): قرارات مؤكدة */}
+            <div className="flex-1 flex items-center justify-between px-6 py-3 min-w-0">
+              <div className="flex items-center gap-4 justify-between w-full">
+                <div className="flex flex-col text-right">
+                  <span className="text-xs md:text-sm font-bold text-slate-500 leading-tight">قرارات مؤكدة</span>
+                  <span id="stat-confirmed" className="text-2xl md:text-3xl font-black text-emerald-600 mt-1 font-mono leading-none">
+                    {confirmedBookingsCount}
+                  </span>
+                </div>
+                <div className="h-12 w-12 bg-emerald-50 text-emerald-600 rounded-[14px] flex items-center justify-center flex-shrink-0">
+                  <ShieldCheck className="h-6 w-6" />
+                </div>
+              </div>
+            </div>
 
-        {/* KPI 2 */}
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
-          <div>
-            <span className="block text-[10px] md:text-xs font-bold text-slate-400 leading-none">حجوزات العيادات المفتوحة</span>
-            <span id="stat-bookings" className="block text-xl md:text-2xl font-black text-slate-800 mt-2 font-mono">
-              {totalBookingsTodayCount}
-            </span>
-          </div>
-          <div className="h-10 w-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center"><BookOpen className="h-5.5 w-5.5" /></div>
-        </div>
+            {/* KPI 3 (Index 2 visually): كادر طبي نشط */}
+            <div className="flex-1 flex items-center justify-between px-6 py-3 min-w-0">
+              <div className="flex items-center gap-4 justify-between w-full">
+                <div className="flex flex-col text-right">
+                  <span className="text-xs md:text-sm font-bold text-slate-500 leading-tight">كادر طبي نشط</span>
+                  <span id="stat-doctors" className="text-2xl md:text-3xl font-black text-sky-600 mt-1 font-mono leading-none">
+                    {activeDoctorsCount}
+                  </span>
+                </div>
+                <div className="h-12 w-12 bg-sky-50 text-sky-600 rounded-[14px] flex items-center justify-center flex-shrink-0">
+                  <Stethoscope className="h-6 w-6" />
+                </div>
+              </div>
+            </div>
 
-        {/* KPI 3 */}
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
-          <div>
-            <span className="block text-[10px] md:text-xs font-bold text-slate-400 leading-none">الأدوار والقرارات المؤكدة</span>
-            <span id="stat-confirmed" className="block text-xl md:text-2xl font-black text-emerald-600 mt-2 font-mono">
-              {confirmedBookingsCount}
-            </span>
-          </div>
-          <div className="h-10 w-10 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center"><ShieldCheck className="h-5.5 w-5.5" /></div>
-        </div>
+            {/* KPI 2 (Index 1 visually): بانتظار سداد */}
+            <div className="flex-1 flex items-center justify-between px-6 py-3 min-w-0">
+              <div className="flex items-center gap-4 justify-between w-full">
+                <div className="flex flex-col text-right">
+                  <span className="text-xs md:text-sm font-bold text-slate-500 leading-tight">بانتظار سداد</span>
+                  <span id="stat-pending" className="text-2xl md:text-3xl font-black text-amber-600 mt-1 font-mono leading-none">
+                    {pendingBookingsCount}
+                  </span>
+                </div>
+                <div className="h-12 w-12 bg-amber-50 text-amber-600 rounded-[14px] flex items-center justify-center flex-shrink-0">
+                  <Clock className="h-6 w-6" />
+                </div>
+              </div>
+            </div>
 
-        {/* KPI 4 */}
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
-          <div>
-            <span className="block text-[10px] md:text-xs font-bold text-slate-400 leading-none">بانتظار سداد الصندوق (عاجل)</span>
-            <span id="stat-pending" className="block text-xl md:text-2xl font-black text-amber-600 mt-2 font-mono">
-              {pendingBookingsCount}
-            </span>
-          </div>
-          <div className="h-10 w-10 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center"><Clock className="h-5.5 w-5.5 animate-pulse" /></div>
-        </div>
-      </section>
+            {/* KPI 1 (Leftmost in RTL - Index 0 visually): حجوزات مفتوحة */}
+            <div className="flex-1 flex items-center justify-between px-6 py-3 min-w-0">
+              <div className="flex items-center gap-4 justify-between w-full">
+                <div className="flex flex-col text-right">
+                  <span className="text-xs md:text-sm font-bold text-slate-500 leading-tight">حجوزات مفتوحة</span>
+                  <span id="stat-bookings" className="text-2xl md:text-3xl font-black text-violet-600 mt-1 font-mono leading-none">
+                    {totalBookingsTodayCount}
+                  </span>
+                </div>
+                <div className="h-12 w-12 bg-violet-50 text-violet-600 rounded-[14px] flex items-center justify-center flex-shrink-0">
+                  <BookOpen className="h-6 w-6" />
+                </div>
+              </div>
+            </div>
 
-      {/* 3. NAVIGATION TAB LIST */}
-      <nav id="app-nav" className="px-4 md:px-8 py-3 flex items-center space-x-1 space-x-reverse border-b border-slate-100 overflow-x-auto bg-white/70 backdrop-blur">
+          </div>
+        </section>
+      )}
+
+      {/* 3. STICKY BOTTOM NAVIGATION BAR */}
+      <nav id="app-nav-bottom" className="fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-md border-t-3 border-[#0f4c81]/20 shadow-[0_-12px_40px_rgba(15,76,129,0.08)] flex items-center justify-around h-24 px-2 md:px-6 select-none" dir="rtl">
+        {/* Tab 1: العيادات المتاحة */}
         <button
           id="tab-bookings"
           onClick={() => setActiveTab('bookings')}
-          className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
+          className={`relative flex-1 max-w-[170px] my-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all text-center px-1 md:px-3 h-20 cursor-pointer ${
             activeTab === 'bookings'
-              ? 'bg-blue-700 text-white shadow'
-              : 'text-slate-500 hover:text-slate-705'
+              ? 'bg-[#0f4c81]/5 text-[#0f4c81] font-black scale-[1.03]'
+              : 'text-[#0f4c81]/60 hover:text-[#0f4c81] hover:bg-slate-50/70 font-bold'
           }`}
         >
-          📝 سجل المراجعات والحجوزات
+          {activeTab === 'bookings' && <span className="absolute top-0 left-6 right-6 h-1.5 bg-[#0f4c81] rounded-b-full shadow-[0_2px_10px_rgba(15,76,129,0.5)]" />}
+          <ClipboardList className={`h-5 w-5 sm:h-5.5 sm:w-5.5 transition-all duration-300 ${activeTab === 'bookings' ? 'scale-110 text-[#0f4c81]' : 'text-[#0f4c81]/45'}`} />
+          <span className="text-[16pt] font-sans leading-tight text-[#0f4c81] font-bold">العيادات المتاحة</span>
         </button>
 
         {role === 'admin' && (
           <>
+            {/* Tab 2: أطباء المستشفى */}
             <button
               id="tab-doctors"
               onClick={() => setActiveTab('doctors')}
-              className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
+              className={`relative flex-1 max-w-[170px] my-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all text-center px-1 md:px-3 h-20 cursor-pointer ${
                 activeTab === 'doctors'
-                  ? 'bg-blue-700 text-white shadow'
-                  : 'text-slate-500 hover:text-slate-705'
+                  ? 'bg-[#0f4c81]/5 text-[#0f4c81] font-black scale-[1.03]'
+                  : 'text-[#0f4c81]/60 hover:text-[#0f4c81] hover:bg-slate-50/70 font-bold'
               }`}
             >
-              🩺 أطباء المستشفى
+              {activeTab === 'doctors' && <span className="absolute top-0 left-6 right-6 h-1.5 bg-[#0f4c81] rounded-b-full shadow-[0_2px_10px_rgba(15,76,129,0.5)]" />}
+              <Users className={`h-5 w-5 sm:h-5.5 sm:w-5.5 transition-all duration-300 ${activeTab === 'doctors' ? 'scale-110 text-[#0f4c81]' : 'text-[#0f4c81]/45'}`} />
+              <span className="text-[16pt] font-sans leading-tight text-[#0f4c81] font-bold">أطباء المستشفى</span>
             </button>
 
+            {/* Tab 3: جداول دوام الأطباء */}
             <button
               id="tab-schedules"
               onClick={() => setActiveTab('schedules')}
-              className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
+              className={`relative flex-1 max-w-[170px] my-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all text-center px-1 md:px-3 h-20 cursor-pointer ${
                 activeTab === 'schedules'
-                  ? 'bg-blue-700 text-white shadow'
-                  : 'text-slate-500 hover:text-slate-705'
+                  ? 'bg-[#0f4c81]/5 text-[#0f4c81] font-black scale-[1.03]'
+                  : 'text-[#0f4c81]/60 hover:text-[#0f4c81] hover:bg-slate-50/70 font-bold'
               }`}
             >
-              🗓️ جداول دوام الأطباء
+              {activeTab === 'schedules' && <span className="absolute top-0 left-6 right-6 h-1.5 bg-[#0f4c81] rounded-b-full shadow-[0_2px_10px_rgba(15,76,129,0.5)]" />}
+              <CalendarDays className={`h-5 w-5 sm:h-5.5 sm:w-5.5 transition-all duration-300 ${activeTab === 'schedules' ? 'scale-110 text-[#0f4c81]' : 'text-[#0f4c81]/45'}`} />
+              <span className="text-[16pt] font-sans leading-tight text-[#0f4c81] font-bold">جداول الدوام</span>
             </button>
 
+            {/* Tab 4: محاكي محادثات الواتساب */}
             <button
               id="tab-simulator"
               onClick={() => setActiveTab('simulator')}
-              className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
+              className={`relative flex-1 max-w-[170px] my-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all text-center px-1 md:px-3 h-20 cursor-pointer ${
                 activeTab === 'simulator'
-                  ? 'bg-blue-700 text-white shadow'
-                  : 'text-slate-500 hover:text-slate-705'
+                  ? 'bg-[#0f4c81]/5 text-[#0f4c81] font-black scale-[1.03]'
+                  : 'text-[#0f4c81]/60 hover:text-[#0f4c81] hover:bg-slate-50/70 font-bold'
               }`}
             >
-              🤖 محاكي محادثات الواتساب
+              {activeTab === 'simulator' && <span className="absolute top-0 left-6 right-6 h-1.5 bg-[#0f4c81] rounded-b-full shadow-[0_2px_10px_rgba(15,76,129,0.5)]" />}
+              <Bot className={`h-5 w-5 sm:h-5.5 sm:w-5.5 transition-all duration-300 ${activeTab === 'simulator' ? 'scale-110 text-[#0f4c81]' : 'text-[#0f4c81]/45'}`} />
+              <span className="text-[16pt] font-sans leading-tight text-[#0f4c81] font-bold">محاكي الواتساب</span>
             </button>
 
+            {/* Tab 5: إعدادات الخادم والربط */}
             <button
               id="tab-settings"
               onClick={() => setActiveTab('settings')}
-              className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
+              className={`relative flex-1 max-w-[170px] my-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all text-center px-1 md:px-3 h-20 cursor-pointer ${
                 activeTab === 'settings'
-                  ? 'bg-blue-700 text-white shadow'
-                  : 'text-slate-500 hover:text-slate-705'
+                  ? 'bg-[#0f4c81]/5 text-[#0f4c81] font-black scale-[1.03]'
+                  : 'text-[#0f4c81]/60 hover:text-[#0f4c81] hover:bg-slate-50/70 font-bold'
               }`}
             >
-              ⚙️ إعدادات الخادم والربط
+              {activeTab === 'settings' && <span className="absolute top-0 left-6 right-6 h-1.5 bg-[#0f4c81] rounded-b-full shadow-[0_2px_10px_rgba(15,76,129,0.5)]" />}
+              <CloudCog className={`h-5 w-5 sm:h-5.5 sm:w-5.5 transition-all duration-300 ${activeTab === 'settings' ? 'scale-110 text-[#0f4c81]' : 'text-[#0f4c81]/45'}`} />
+              <span className="text-[16pt] font-sans leading-tight text-[#0f4c81] font-bold">إعدادات الخادم</span>
             </button>
 
+            {/* Tab 6: إعدادات الحسابات والدخول */}
             <button
               id="tab-access-settings"
               onClick={() => setActiveTab('access_settings')}
-              className={`px-4 py-2 text-xs md:text-sm font-black rounded-xl transition-all whitespace-nowrap ${
+              className={`relative flex-1 max-w-[170px] my-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all text-center px-1 md:px-3 h-20 cursor-pointer ${
                 activeTab === 'access_settings'
-                  ? 'bg-blue-700 text-white shadow'
-                  : 'text-slate-500 hover:text-slate-705'
+                  ? 'bg-[#0f4c81]/5 text-[#0f4c81] font-black scale-[1.03]'
+                  : 'text-[#0f4c81]/60 hover:text-[#0f4c81] hover:bg-slate-50/70 font-bold'
               }`}
             >
-              🔐 إعدادات الحسابات والدخول
+              {activeTab === 'access_settings' && <span className="absolute top-0 left-6 right-6 h-1.5 bg-[#0f4c81] rounded-b-full shadow-[0_2px_10px_rgba(15,76,129,0.5)]" />}
+              <Lock className={`h-5 w-5 sm:h-5.5 sm:w-5.5 transition-all duration-300 ${activeTab === 'access_settings' ? 'scale-110 text-[#0f4c81]' : 'text-[#0f4c81]/40'}`} />
+              <span className="text-[16pt] font-sans leading-tight text-[#0f4c81] font-bold">حسابات الدخول</span>
             </button>
           </>
         )}
       </nav>
 
       {/* 4. MAIN CONTENT AREA */}
-      <main id="app-main" className="flex-1 p-4 md:p-8">
+      <main id="app-main" className="flex-1 p-4 md:p-8 pb-24 sm:pb-28">
         {loading ? (
           <div className="flex flex-col items-center justify-center h-64 text-slate-400 space-y-2">
             <span className="animate-spin text-xl font-mono">⌛</span>

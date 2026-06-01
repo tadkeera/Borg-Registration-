@@ -226,19 +226,20 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
       {/* 1. MASTER VIEW: Doctor schedule cards */}
       {!selectedSchId ? (
         <div className="space-y-6">
-          <div className="border-b border-indigo-100/40 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-black text-slate-800 flex items-center gap-1.5">
-                <Hospital className="h-5 w-5 text-blue-700" />
-                سجل معاينات الأطباء والعيادات المتاحة
-              </h2>
-              <p className="text-xs text-slate-500 mt-1 font-bold">
-                اضغط على كرت الطبيب أدناه لاستعراض وتوثيق ملفات المرضى المسجلين ووضع أدوار الحجز.
-              </p>
-            </div>
-            
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-5 pb-2">
             {/* Display current date and manual refresh button */}
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="bg-[#e2f1ff] text-[#0f5ca8] border-2 border-[#b9dbf8] px-6 py-4 rounded-[20px] flex items-center gap-4 shadow-[0_8px_20px_rgba(15,92,168,0.06)] select-none">
+                <div className="text-right">
+                  <span className="block text-[24pt] font-black font-sans leading-none">
+                    {getArabicDayName(filterDate)}، {filterDate}
+                  </span>
+                </div>
+                <div className="h-11 w-11 bg-[#0f5ca8]/10 rounded-xl flex items-center justify-center">
+                  <CalendarClock className="h-6 w-6 text-[#0f5ca8]" />
+                </div>
+              </div>
+
               {onRefresh && (
                 <button
                   type="button"
@@ -248,47 +249,54 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                       setTimeout(() => setRefreshingStatus(false), 800);
                     });
                   }}
-                  className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 px-3.5 py-2.5 rounded-2xl flex items-center gap-2 text-xs font-black cursor-pointer transition-all shadow-sm active:scale-95 duration-200"
+                  className="bg-transparent hover:bg-slate-100 text-[#2d8f85] hover:text-[#1d5751] px-4 py-2.5 rounded-xl flex items-center gap-2 text-xs font-black cursor-pointer transition-all active:scale-95 duration-200"
                 >
-                  <RefreshCw className={`h-4 w-4 text-blue-700 ${refreshingStatus ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`h-4.5 w-4.5 text-[#2d8f85] ${refreshingStatus ? 'animate-spin' : ''}`} />
                   <span>تحديث يدوي للبيانات</span>
                 </button>
               )}
+            </div>
 
-              <div className="bg-blue-50/70 border border-blue-100 text-blue-800 px-4 py-2 rounded-2xl flex items-center gap-2 text-xs">
-                <CalendarClock className="h-4 w-4 text-blue-600" />
-                <div>
-                  <span className="block font-black">تاريخ اليوم المحدد:</span>
-                  <span className="font-mono font-bold text-blue-700">{getArabicDayName(filterDate)}، {filterDate}</span>
-                </div>
+            {/* Right Side: Title with Clinic Badge Icon */}
+            <div className="flex items-center gap-3 justify-end text-right">
+              <h2 className="text-lg md:text-xl font-black text-slate-800 flex items-center gap-2.5">
+                سجل العيادات المتاحة
+              </h2>
+              <div className="h-10 w-10 text-[#2d8f85] border border-[#2d8f85]/30 rounded-xl flex items-center justify-center bg-[#f0fbf9]">
+                <Hospital className="h-5.5 w-5.5 stroke-[1.8]" />
               </div>
             </div>
           </div>
 
-          {/* Interactive Date & Doctor Filters Panel */}
-          <div className="bg-slate-50 p-4 border border-slate-150 rounded-2xl flex flex-col md:flex-row md:items-center gap-4 justify-between shadow-sm">
-            <div className="flex items-center gap-2">
-              <Filter className="h-4 w-4 text-slate-500" />
-              <span className="text-xs font-black text-slate-700">خيارات تصفية العيادات المجدولة:</span>
+          {/* Solid Teal Divider Line styled as the mockup */}
+          <div className="w-full border-t-[3px] border-[#1d5751] rounded-full opacity-90 my-2" />
+
+          {/* Interactive Date & Doctor Filters Panel - Light Mint/Teal gradient look */}
+          <div className="bg-gradient-to-r from-[#e7f4f2] to-[#f4fbfb] border border-[#2d8f85]/20 rounded-[24px] p-5 shadow-[0_8px_30px_rgba(45,143,133,0.04)] flex flex-col md:flex-row md:items-center justify-between gap-4 w-full">
+            <div className="flex items-center gap-2.5 justify-end md:order-last">
+              <span className="text-xs font-black text-[#111c24]">خيارات تصفية العيادات المجدولة:</span>
+              <div className="text-[#2d8f85]">
+                <Filter className="h-4.5 w-4.5 stroke-[2]" />
+              </div>
             </div>
             
-            <div className="flex flex-wrap items-center gap-4">
-              <div className="flex flex-col">
-                <label className="text-[10px] font-black text-slate-500 mb-1">اختر التاريخ:</label>
+            <div className="flex flex-wrap items-center gap-5 justify-start md:order-first">
+              <div className="flex flex-col items-start gap-1">
+                <label className="text-[11px] font-black text-slate-500">اختر التاريخ:</label>
                 <input
                   type="date"
                   value={filterDate}
                   onChange={(e) => setFilterDate(e.target.value)}
-                  className="px-3.5 py-1.5 text-xs bg-white border border-slate-200 text-slate-850 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-bold"
+                  className="px-4 py-2 text-xs bg-white text-slate-800 border border-slate-200/80 rounded-[14px] focus:outline-none focus:ring-2 focus:ring-[#2d8f85]/55 focus:border-[#2d8f85] transition-all font-bold shadow-2xs"
                 />
               </div>
 
-              <div className="flex flex-col">
-                <label className="text-[10px] font-black text-slate-500 mb-1">تصفية باسم الطبيب:</label>
+              <div className="flex flex-col items-start gap-1">
+                <label className="text-[11px] font-black text-slate-500">تصفية باسم الطبيب:</label>
                 <select
                   value={filterDoctorId}
                   onChange={(e) => setFilterDoctorId(e.target.value)}
-                  className="px-3.5 py-1.5 text-xs bg-white border border-slate-200 text-slate-850 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-bold min-w-[200px]"
+                  className="px-4 py-2 text-xs bg-white text-slate-800 border border-slate-200/80 rounded-[14px] focus:outline-none focus:ring-2 focus:ring-[#2d8f85]/55 focus:border-[#2d8f85] transition-all font-bold shadow-2xs min-w-[210px] cursor-pointer"
                 >
                   <option value="all">كل الأطباء (All Doctors)</option>
                   {doctors.map(d => (
