@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Doctor, Schedule, Booking } from './types';
 import Login from './components/Login';
 import DoctorsTab from './components/DoctorsTab';
@@ -61,10 +61,24 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
 
+  // References to handle AbortControllers and delayed execution timers safely
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const syncTimeoutRef = useRef<any>(null);
+
   const fetchAllData = async () => {
+    // 1. Immediately abort any other in-flight requests under this controller
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    // 2. Instantiate a fresh AbortController for this fetch cycle
+    const currentController = new AbortController();
+    abortControllerRef.current = currentController;
+    const { signal } = currentController;
+
     try {
       // 1. Fetch Doctors
-      const docsRes = await fetch('/api/doctors');
+      const docsRes = await fetch('/api/doctors', { signal });
       if (!docsRes.ok) {
         throw new Error(`تعذر جلب الأطباء (الحالة ${docsRes.status})`);
       }
@@ -77,7 +91,7 @@ export default function App() {
       }
 
       // 2. Fetch Schedules
-      const schRes = await fetch('/api/schedules');
+      const schRes = await fetch('/api/schedules', { signal });
       if (!schRes.ok) {
         throw new Error(`تعذر جلب جدول المواعيد (الحالة ${schRes.status})`);
       }
@@ -89,7 +103,7 @@ export default function App() {
       }
 
       // 3. Fetch Bookings
-      const bookRes = await fetch('/api/bookings');
+      const bookRes = await fetch('/api/bookings', { signal });
       if (!bookRes.ok) {
         throw new Error(`تعذر جلب الحجوزات (الحالة ${bookRes.status})`);
       }
@@ -100,22 +114,48 @@ export default function App() {
         throw new Error('تنسيق بيانات الحجوزات غير صالح');
       }
     } catch (err: any) {
-      // Log as a warning rather than loud error spam to prevent crash logs
+      if (err.name === 'AbortError') {
+        // Ignored: abort is expected and clean
+        return;
+      }
       console.warn('Dashboard background sync notice:', err.message || err);
       setFetchError('تنبيه: تعذر تحديث البيانات في الخلفية. يرجى التحقق من الاتصال بالخادم وقاعدة البيانات.');
     } finally {
-      setLoading(false);
+      // Only transition loading to false if this was the latest requests controller
+      if (abortControllerRef.current === currentController) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    if (isLoggedIn) {
-      fetchAllData();
-      const intervalId = setInterval(() => {
-        fetchAllData();
-      }, 2000);
-      return () => clearInterval(intervalId);
-    }
+    if (!isLoggedIn) return;
+
+    let isMounted = true;
+
+    const runSyncLoop = async () => {
+      if (!isMounted) return;
+      await fetchAllData();
+      
+      if (isMounted) {
+        // Debounce / Delay subsequent background sync triggers by 4000ms sequentially
+        // to prevent overlapping requests or hammering the database connections.
+        syncTimeoutRef.current = setTimeout(runSyncLoop, 4000);
+      }
+    };
+
+    // Rule 3: Debounce the initial trigger by 500ms on mount/hot-reload
+    syncTimeoutRef.current = setTimeout(runSyncLoop, 500);
+
+    return () => {
+      isMounted = false;
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [isLoggedIn]);
 
   const handleLoginSuccess = (userRole: 'admin' | 'receptionist', token: string, name: string | null) => {
@@ -143,6 +183,14 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    // Abort any active fetches and clear polling timer immediately on logout
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
+    }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
     } catch (err) {
