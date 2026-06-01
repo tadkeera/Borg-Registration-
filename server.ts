@@ -690,12 +690,29 @@ app.post('/api/bookings', async (req, res) => {
 
     const { data: sch } = await supabase
       .from('schedules')
-      .select('available_capacity, start_time')
+      .select('max_capacity, start_time')
       .eq('id', schedule_id)
       .single();
 
-    if (!sch || sch.available_capacity <= 0) {
-      return res.status(400).json({ error: 'عذراً لا توجد سعة باقية للحجز في هذا الموعد.' });
+    if (!sch) {
+      return res.status(400).json({ error: 'عذراً لا يوجد جدول مواعيد متاح لهذا الحجز.' });
+    }
+
+    // Dynamic date-scoped remaining capacity check
+    const { count: bookedCount, error: countErr } = await supabase
+      .from('bookings')
+      .select('*', { count: 'exact', head: true })
+      .eq('schedule_id', schedule_id)
+      .eq('booking_date', booking_date)
+      .neq('status', 'cancelled')
+      .neq('payment_status', 'cancelled');
+
+    if (countErr) throw countErr;
+
+    const remainingSlots = sch.max_capacity - (bookedCount || 0);
+
+    if (remainingSlots <= 0) {
+      return res.status(400).json({ error: 'عذراً لا توجد سعة باقية للحجز في هذا الموعد المحدد.' });
     }
 
     const startHour = parseInt(sch.start_time.split(':')[0]);
@@ -1047,6 +1064,28 @@ app.get('/api/whatsapp-logs', async (req, res) => {
   } catch (err: any) {
     console.error('Fetch whatsapp logs error:', err.message);
     res.status(500).json({ error: 'Failed to fetch logs' });
+  }
+});
+
+// Get session state for a given test phone number
+app.get('/api/simulator/session', async (req, res) => {
+  try {
+    const { phone } = req.query;
+    if (!phone) {
+      return res.status(400).json({ error: 'رقم الهاتف مطلوب' });
+    }
+    const cleanPhone = normalizePhone(phone as string);
+    const supabase = getSupabase();
+    const { data: session } = await supabase
+      .from('bot_sessions')
+      .select('*')
+      .eq('phone', cleanPhone)
+      .maybeSingle();
+
+    res.json({ sessionDetails: session || null });
+  } catch (err: any) {
+    console.error('Fetch simulator session error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch session' });
   }
 });
 
@@ -2123,12 +2162,16 @@ async function sendWhatsAppMessage(
       });
       const bodyText = await response.text();
       if (!response.ok) {
-        console.error(`[WhatsApp Gateway Error] Standalone API rejected message for ${to}. Http status: ${response.status}. Response:`, bodyText);
+        if (response.status === 503 && bodyText.includes('WhatsApp client is not ready')) {
+          console.warn(`[WhatsApp Gateway Info] Standalone API is offline or QR not scanned. Message will still be simulated locally. Http status: 503.`);
+        } else {
+          console.warn(`[WhatsApp Gateway Info] Standalone API responded with code ${response.status}. Response: ${bodyText}`);
+        }
       } else {
         console.log(`[WhatsApp Gateway Success] Dispatched message to [+${to}] via Standalone URL successfully! Response:`, bodyText);
       }
     } catch (err: any) {
-      console.error(`[WhatsApp Gateway Exception] Failed to POST to standalone gateway:`, err.message);
+      console.warn(`[WhatsApp Gateway Exception] Unable to connect to standalone gateway (offline):`, err.message);
     }
     return;
   }
@@ -2345,7 +2388,8 @@ interface GroupedDayOption {
 
 function getGroupedDatesForDoctor(
   doctor: Doctor,
-  schedules: Schedule[]
+  schedules: Schedule[],
+  bookings: Booking[] = []
 ): { prompt: string; options: GroupedDayOption[] } {
   const docSchedules = schedules.filter(s => s.doctor_id === doctor.id);
   
@@ -2355,6 +2399,16 @@ function getGroupedDatesForDoctor(
   const ourCurrentDay = jsToOur[currentJsDay];
 
   const rawOptions: { day_of_week: number; date: string; weekLabel: string; schedule: Schedule }[] = [];
+
+  const isScheduleFullOnDate = (sch: Schedule, dateStr: string): boolean => {
+    const count = bookings.filter(b => 
+      b.schedule_id === sch.id && 
+      b.booking_date === dateStr && 
+      b.status !== 'cancelled' &&
+      b.payment_status !== 'cancelled'
+    ).length;
+    return count >= sch.max_capacity;
+  };
 
   docSchedules.forEach(s => {
     const startHour = parseInt(s.start_time.split(':')[0]);
@@ -2366,23 +2420,29 @@ function getGroupedDatesForDoctor(
       // Adding for "current" week (الأسبوع الحالي)
       const daysToAddCurrent = 1 + s.day_of_week;
       const dateCurrent = new Date(yemenNow.getTime() + daysToAddCurrent * 24 * 60 * 60 * 1000);
-      rawOptions.push({
-        day_of_week: s.day_of_week,
-        date: dateCurrent.toISOString().split('T')[0],
-        weekLabel: 'الأسبوع الحالي',
-        schedule: s
-      });
+      const dateStr = dateCurrent.toISOString().split('T')[0];
+      if (!isScheduleFullOnDate(s, dateStr)) {
+        rawOptions.push({
+          day_of_week: s.day_of_week,
+          date: dateStr,
+          weekLabel: 'الأسبوع الحالي',
+          schedule: s
+        });
+      }
 
       // Adding for "next" week (الأسبوع الثاني)
       if (doctor.allow_second_week_booking) {
         const daysToAddNext = 1 + s.day_of_week + 7;
         const dateNext = new Date(yemenNow.getTime() + daysToAddNext * 24 * 60 * 60 * 1000);
-        rawOptions.push({
-          day_of_week: s.day_of_week,
-          date: dateNext.toISOString().split('T')[0],
-          weekLabel: 'الأسبوع الثاني',
-          schedule: s
-        });
+        const dateStrNext = dateNext.toISOString().split('T')[0];
+        if (!isScheduleFullOnDate(s, dateStrNext)) {
+          rawOptions.push({
+            day_of_week: s.day_of_week,
+            date: dateStrNext,
+            weekLabel: 'الأسبوع الثاني',
+            schedule: s
+          });
+        }
       }
     } else {
       const diff = s.day_of_week - ourCurrentDay;
@@ -2400,34 +2460,43 @@ function getGroupedDatesForDoctor(
         if (!isExpired) {
           // Not expired today, add to current week
           const dateCurrent = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
-          rawOptions.push({
-            day_of_week: s.day_of_week,
-            date: dateCurrent.toISOString().split('T')[0],
-            weekLabel: 'الأسبوع الحالي',
-            schedule: s
-          });
+          const dateStr = dateCurrent.toISOString().split('T')[0];
+          if (!isScheduleFullOnDate(s, dateStr)) {
+            rawOptions.push({
+              day_of_week: s.day_of_week,
+              date: dateStr,
+              weekLabel: 'الأسبوع الحالي',
+              schedule: s
+            });
+          }
         }
       } else if (diff > 0) {
         // Future day this week
         const dateCurrent = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
-        rawOptions.push({
-          day_of_week: s.day_of_week,
-          date: dateCurrent.toISOString().split('T')[0],
-          weekLabel: 'الأسبوع الحالي',
-          schedule: s
-        });
+        const dateStr = dateCurrent.toISOString().split('T')[0];
+        if (!isScheduleFullOnDate(s, dateStr)) {
+          rawOptions.push({
+            day_of_week: s.day_of_week,
+            date: dateStr,
+            weekLabel: 'الأسبوع الحالي',
+            schedule: s
+          });
+        }
       }
 
       // Next week processing (الأسبوع الثاني)
       if (doctor.allow_second_week_booking) {
         const diffNext = diff + 7;
         const dateNext = new Date(yemenNow.getTime() + diffNext * 24 * 60 * 60 * 1000);
-        rawOptions.push({
-          day_of_week: s.day_of_week,
-          date: dateNext.toISOString().split('T')[0],
-          weekLabel: 'الأسبوع الثاني',
-          schedule: s
-        });
+        const dateStrNext = dateNext.toISOString().split('T')[0];
+        if (!isScheduleFullOnDate(s, dateStrNext)) {
+          rawOptions.push({
+            day_of_week: s.day_of_week,
+            date: dateStrNext,
+            weekLabel: 'الأسبوع الثاني',
+            schedule: s
+          });
+        }
       }
     }
   });
@@ -2675,7 +2744,8 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
     }
 
     session.selected_shift = null;
-    const { prompt, options } = getGroupedDatesForDoctor(doctor, activeSchedules || []);
+    const { data: dbBookings } = await supabase.from('bookings').select('*').eq('doctor_id', doctor.id);
+    const { prompt, options } = getGroupedDatesForDoctor(doctor, activeSchedules || [], dbBookings || []);
     if (options.length === 0) {
       let failPrompt = `عذرًا، الطبيب الذي اخترته (*${doctor.name}*) ليس لديه أي مواعيد عيادة متاحة لبقية هذا الأسبوع. نسعد بخدمتك وتسجيلك مجددًا مع بداية الأسبوع القادم، كما يمكنك اختيار أحد زملائه الأطباء البدلاء من القائمة لتنسيق موعدك:\n`;
       activeDocs.forEach((doc, idx) => {
@@ -2693,7 +2763,8 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
     if (!doctor) {
       return outputReply("عذراً، حدث خطأ ما في الجلسة. يرجى إرسال كلمة 'تسجيل' للبدء من جديد.", 'IDLE');
     }
-    const { options } = getGroupedDatesForDoctor(doctor, activeSchedules || []);
+    const { data: dbBookings } = await supabase.from('bookings').select('*').eq('doctor_id', doctor.id);
+    const { options } = getGroupedDatesForDoctor(doctor, activeSchedules || [], dbBookings || []);
 
     if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= options.length) {
       return outputReply(
@@ -2780,7 +2851,8 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
     }
     const selectedDateStr = session.selected_date!;
     
-    const { options } = getGroupedDatesForDoctor(doctor, activeSchedules || []);
+    const { data: dbBookings } = await supabase.from('bookings').select('*').eq('doctor_id', doctor.id);
+    const { options } = getGroupedDatesForDoctor(doctor, activeSchedules || [], dbBookings || []);
     const matchedOption = options.find(o => o.date === selectedDateStr);
     
     if (!matchedOption) {

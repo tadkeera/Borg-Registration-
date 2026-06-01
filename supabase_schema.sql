@@ -122,18 +122,26 @@ CREATE OR REPLACE FUNCTION public.assign_queue_number_and_capacity()
 RETURNS TRIGGER AS $$
 DECLARE
     next_q INT;
-    cap INT;
+    max_cap INT;
+    booked_cnt INT;
 BEGIN
-    -- 1. Lock the schedule row to prevent capacity race conditions
-    SELECT available_capacity INTO cap FROM public.schedules 
+    -- 1. Lock and fetch the schedule's maximum capacity
+    SELECT max_capacity INTO max_cap FROM public.schedules 
     WHERE id = NEW.schedule_id FOR UPDATE;
 
-    -- 2. Verify that there is capacity left
-    IF cap <= 0 THEN
-        RAISE EXCEPTION 'عذراً، لا يوجد سعة متوفرة للحجز في هذا الموعد.';
+    -- 2. Count active/approved/pending bookings for this doctor/schedule on this specific booking_date
+    SELECT COUNT(*) INTO booked_cnt FROM public.bookings
+    WHERE schedule_id = NEW.schedule_id
+      AND booking_date = NEW.booking_date
+      AND status != 'cancelled'
+      AND payment_status != 'cancelled';
+
+    -- 3. Verify date-scoped capacity
+    IF booked_cnt >= max_cap THEN
+        RAISE EXCEPTION 'عذراً، لا يوجد سعة متوفرة للحجز في هذا الموعد المحدد للأسف.';
     END IF;
 
-    -- 3. Get next sequence group queue number for this doctor on this day and shift
+    -- 4. Get next sequence group queue number for this doctor on this day and shift
     SELECT COALESCE(MAX(queue_number), 0) + 1 INTO next_q
     FROM public.bookings
     WHERE doctor_id = NEW.doctor_id 
@@ -142,11 +150,6 @@ BEGIN
 
     -- Assign to the new record
     NEW.queue_number := next_q;
-
-    -- 4. Decrement available_capacity of the doctor schedule
-    UPDATE public.schedules
-    SET available_capacity = available_capacity - 1
-    WHERE id = NEW.schedule_id;
 
     RETURN NEW;
 END;
@@ -158,30 +161,10 @@ FOR EACH ROW
 EXECUTE FUNCTION public.assign_queue_number_and_capacity();
 
 
--- Function 2: Adjust capacity when a booking is cancelled or restored
+-- Function 2: Adjust capacity when a booking is updated (No-op trigger remaining for backwards compatibility)
 CREATE OR REPLACE FUNCTION public.adjust_capacity_on_update()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- If a booking status changes from active (pending/confirmed) to cancelled (or payment_status to cancelled)
-    IF (OLD.status != 'cancelled' AND NEW.status = 'cancelled') OR 
-       (OLD.payment_status != 'cancelled' AND NEW.payment_status = 'cancelled') THEN
-        
-        -- Increment available capacity
-        UPDATE public.schedules
-        SET available_capacity = LEAST(max_capacity, available_capacity + 1)
-        WHERE id = NEW.schedule_id;
-
-    -- If a booking was custom-restored from cancelled back to active
-    ELSIF (OLD.status = 'cancelled' AND NEW.status != 'cancelled') OR 
-          (OLD.payment_status = 'cancelled' AND NEW.payment_status != 'cancelled') THEN
-        
-        -- Decrement available capacity
-        UPDATE public.schedules
-        SET available_capacity = GREATEST(0, available_capacity - 1)
-        WHERE id = NEW.schedule_id;
-
-    END IF;
-
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

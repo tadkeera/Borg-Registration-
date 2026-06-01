@@ -309,7 +309,16 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
               {displayedSchedules.map((sch, schIdx) => {
                 const doc = getDoctorForSchedule(sch);
                 if (!doc) return null;
-                const isFull = sch.available_capacity === 0;
+
+                // Calculate the real-time date-scoped remaining seats
+                const activeBookingsForDate = bookings.filter(b => 
+                  b.schedule_id === sch.id && 
+                  b.booking_date === filterDate && 
+                  b.status !== 'cancelled' && 
+                  b.payment_status !== 'cancelled'
+                );
+                const remainingSeats = Math.max(0, sch.max_capacity - activeBookingsForDate.length);
+                const isFull = remainingSeats === 0;
 
                 const CardBorders = [
                   'border-blue-400 focus:border-blue-600 shadow-[0_8px_30px_rgba(59,130,246,0.05)] hover:shadow-[0_20px_40px_rgba(59,130,246,0.1)]',
@@ -400,7 +409,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                           </div>
                         ) : (
                           <div className="bg-[#e7f9ee] border-2 md:border-[3px] border-[#82d9c4] text-[#196f3d] font-black h-[72px] rounded-2xl flex items-center justify-center" dir="rtl">
-                            <span className="text-[36pt] leading-none select-none">{sch.available_capacity}</span>
+                            <span className="text-[36pt] leading-none select-none">{remainingSeats}</span>
                           </div>
                         )}
                       </div>
@@ -536,6 +545,10 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                       const spentHours = ageDiffMs / (3600000);
                       const isExpiredPending = b.status === 'pending' && b.payment_status === 'pending' && spentHours >= 48;
 
+                      const isReceptionist = role?.toLowerCase() === 'receptionist';
+                      const isCancelled = b.status === 'cancelled';
+                      const isReceptionistLocked = isReceptionist && isCancelled;
+
                       return (
                         <tr key={b.id} className="hover:bg-slate-50/50 transition-colors text-xs text-slate-800">
                           
@@ -568,6 +581,12 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                               )}
                               {receptionistName && <span className="text-slate-400 mr-1">• الموثق: {receptionistName}</span>}
                             </div>
+                            {isReceptionistLocked && (
+                              <div className="mt-1.5 flex items-center gap-1 text-[9px] font-bold text-amber-600 bg-amber-50/60 border border-amber-200 px-2 py-0.5 rounded-lg w-fit">
+                                <span>🔒</span>
+                                <span>ملغي تلقائياً (تجاوز مهلة الـ 48 ساعة) - لا يمكن التعديل</span>
+                              </div>
+                            )}
                           </td>
 
                           {/* Patient phone */}
@@ -582,8 +601,11 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                             {isAdmin || role === 'receptionist' ? (
                               <select
                                 value={b.payment_status}
+                                disabled={isReceptionistLocked}
                                 onChange={(e) => handleUpdatePayment(b.id, e.target.value as PaymentStatus)}
                                 className={`px-2 py-0.5 text-[10px] font-black rounded-md border focus:outline-none focus:ring-1.2 cursor-pointer ${
+                                  isReceptionistLocked ? 'opacity-65 cursor-not-allowed bg-slate-100 text-slate-400' : ''
+                                } ${
                                   b.payment_status === 'paid'
                                     ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                                     : b.payment_status === 'cancelled'
@@ -620,8 +642,11 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                             {isAdmin || role === 'receptionist' ? (
                               <select
                                 value={b.status}
+                                disabled={isReceptionistLocked}
                                 onChange={(e) => handleUpdateStatus(b.id, e.target.value as BookingStatus)}
                                 className={`px-2 py-0.5 text-[10px] font-black rounded-md border focus:outline-none focus:ring-1.2 cursor-pointer ${
+                                  isReceptionistLocked ? 'opacity-65 cursor-not-allowed bg-slate-100 text-slate-400' : ''
+                                } ${
                                   b.status === 'confirmed'
                                     ? 'bg-blue-50 text-blue-700 border-blue-200'
                                     : b.status === 'cancelled'
@@ -672,10 +697,10 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                               ) : (
                                 <button
                                   onClick={() => handleSendReminder(b)}
-                                  disabled={sendingReminderId !== null}
+                                  disabled={sendingReminderId !== null || isReceptionistLocked}
                                   className={`p-1 px-2.5 rounded border text-[10px] font-black flex items-center gap-1 cursor-pointer transition-all ${
-                                    sendingReminderId === b.id
-                                      ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                                    sendingReminderId === b.id || isReceptionistLocked
+                                      ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60'
                                       : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 active:scale-95'
                                   }`}
                                   title="إرسال رسالة تذكير واتساب مخصصة للمريض لتأكيد الحضور"

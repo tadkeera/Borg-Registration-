@@ -288,9 +288,7 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
                               ) : (
                                 <div>
                                   <div className="inline-flex items-center justify-center">
-                                    <span className="text-xs font-black text-slate-800 font-mono">{s.available_capacity}</span>
-                                    <span className="text-[10px] text-slate-405 font-mono px-0.5">/</span>
-                                    <span className="text-[10px] text-slate-500 font-mono font-bold">{s.max_capacity}</span>
+                                    <span className="text-xs font-black text-slate-800 font-mono">{s.max_capacity} مقعداً</span>
                                     {isAdmin && (
                                       <button
                                         onClick={() => {
@@ -304,18 +302,6 @@ export default function SchedulesTab({ schedules, doctors, role, onAddSchedule, 
                                       </button>
                                     )}
                                   </div>
-                                </div>
-                              )}
-                              {s.available_capacity === 0 ? (
-                                <span className="block text-[8px] font-bold text-red-500 leading-none mt-1">
-                                  مكتمل السعة 🚫
-                                </span>
-                              ) : (
-                                <div className="w-14 bg-slate-150 h-1.5 rounded-full overflow-hidden mx-auto mt-1">
-                                  <div
-                                    className="bg-blue-600 h-1.5"
-                                    style={{ width: `${(s.available_capacity / s.max_capacity) * 100}%` }}
-                                  />
                                 </div>
                               )}
                             </td>

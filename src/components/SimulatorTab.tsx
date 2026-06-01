@@ -30,13 +30,43 @@ export default function SimulatorTab({ onSendMessageCallback }: SimulatorTabProp
   // Load chat logs and active session
   const loadLogsAndState = async () => {
     try {
+      // Clean target phone
+      const cleanTargetPhone = phoneNumber.replace(/^\+/, '').replace(/\s+/g, '').trim();
+
       // 1. WhatsApp global logs
       const logRes = await fetch('/api/whatsapp-logs');
       const logData = await logRes.json();
       setSysLogs(logData);
 
-      // Find last messages for our specific phone in logs to rebuild bubble UI if wanted,
-      // or we can just let bubbles represent the active playground session.
+      // Find messages for our specific phone in logs to rebuild bubble UI
+      const filtered = (logData || []).filter((log: any) => {
+        const logPhone = log.phone.replace(/^\+/, '').replace(/\s+/g, '').trim();
+        return logPhone === cleanTargetPhone;
+      });
+
+      const mappedBubbles: ChatBubble[] = filtered.map((log: any) => ({
+        id: log.id,
+        sender: log.direction === 'in' ? 'user' : 'bot',
+        text: log.message,
+        timestamp: new Date(log.timestamp).toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' })
+      })).reverse(); // Oldest first
+
+      if (mappedBubbles.length === 0) {
+        mappedBubbles.push({
+          id: 'default-1',
+          sender: 'bot',
+          text: 'مرحباً بك في مُحاكي واتساب مستشفى برج الأطباء! 🏥\nيمكنك البدء في الحجز عن طريق إرسال كلمة "تسجيل" أو الرقم "1".',
+          timestamp: new Date().toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' })
+        });
+      }
+      setChatHistory(mappedBubbles);
+
+      // 2. Fetch active session details
+      const sessionRes = await fetch(`/api/simulator/session?phone=${encodeURIComponent(phoneNumber)}`);
+      if (sessionRes.ok) {
+        const sessionData = await sessionRes.json();
+        setActiveSession(sessionData.sessionDetails);
+      }
     } catch (err) {
       console.error('Error loading simulator data:', err);
     }
@@ -44,16 +74,6 @@ export default function SimulatorTab({ onSendMessageCallback }: SimulatorTabProp
 
   useEffect(() => {
     loadLogsAndState();
-    
-    // Seed default bubbles on first render
-    setChatHistory([
-      {
-        id: '1',
-        sender: 'bot',
-        text: 'مرحباً بك في مُحاكي واتساب مستشفى برج الأطباء! 🏥\nيمكنك البدء في الحجز عن طريق إرسال كلمة "تسجيل" أو الرقم "1".',
-        timestamp: new Date().toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' })
-      }
-    ]);
   }, [phoneNumber]);
 
   // Scroll mock mobile to bottom
@@ -66,7 +86,7 @@ export default function SimulatorTab({ onSendMessageCallback }: SimulatorTabProp
     if (!text) return;
 
     setLoading(true);
-    // Add user bubble
+    // Add user bubble optimistically
     const userBubble: ChatBubble = {
       id: `user-${Date.now()}`,
       sender: 'user',
@@ -86,20 +106,14 @@ export default function SimulatorTab({ onSendMessageCallback }: SimulatorTabProp
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      // Add bot reply bubble
-      const botBubble: ChatBubble = {
-        id: `bot-${Date.now()}`,
-        sender: 'bot',
-        text: data.receivedReply,
-        timestamp: new Date().toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' })
-      };
-
-      setChatHistory(prev => [...prev, botBubble]);
-      setActiveSession(data.sessionDetails);
-      
       // Reload server logs and parent counters
-      loadLogsAndState();
+      await loadLogsAndState();
       onSendMessageCallback();
+
+      // Delay-sync to capture post-confirmation templates (like delayed Message B)
+      setTimeout(() => {
+        loadLogsAndState();
+      }, 1700);
     } catch (err) {
       console.error('Sim error:', err);
     } finally {

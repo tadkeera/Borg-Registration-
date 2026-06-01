@@ -52,6 +52,7 @@ export default function App() {
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   
   // Tab control
   const [activeTab, setActiveTab] = useState<'doctors' | 'schedules' | 'bookings' | 'simulator' | 'settings' | 'access_settings'>('bookings');
@@ -61,19 +62,46 @@ export default function App() {
 
   const fetchAllData = async () => {
     try {
+      // 1. Fetch Doctors
       const docsRes = await fetch('/api/doctors');
+      if (!docsRes.ok) {
+        throw new Error(`تعذر جلب الأطباء (الحالة ${docsRes.status})`);
+      }
       const docsData = await docsRes.json();
-      setDoctors(docsData);
+      if (Array.isArray(docsData)) {
+        setDoctors(docsData);
+        setFetchError(null);
+      } else {
+        throw new Error('تنسيق بيانات الأطباء غير صالح');
+      }
 
+      // 2. Fetch Schedules
       const schRes = await fetch('/api/schedules');
+      if (!schRes.ok) {
+        throw new Error(`تعذر جلب جدول المواعيد (الحالة ${schRes.status})`);
+      }
       const schData = await schRes.json();
-      setSchedules(schData);
+      if (Array.isArray(schData)) {
+        setSchedules(schData);
+      } else {
+        throw new Error('تنسيق بيانات جدول المواعيد غير صالح');
+      }
 
+      // 3. Fetch Bookings
       const bookRes = await fetch('/api/bookings');
+      if (!bookRes.ok) {
+        throw new Error(`تعذر جلب الحجوزات (الحالة ${bookRes.status})`);
+      }
       const bookData = await bookRes.json();
-      setBookings(bookData);
-    } catch (err) {
-      console.error('Error fetching dashboard data:', err);
+      if (Array.isArray(bookData)) {
+        setBookings(bookData);
+      } else {
+        throw new Error('تنسيق بيانات الحجوزات غير صالح');
+      }
+    } catch (err: any) {
+      // Log as a warning rather than loud error spam to prevent crash logs
+      console.warn('Dashboard background sync notice:', err.message || err);
+      setFetchError('تنبيه: تعذر تحديث البيانات في الخلفية. يرجى التحقق من الاتصال بالخادم وقاعدة البيانات.');
     } finally {
       setLoading(false);
     }
@@ -311,6 +339,22 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {fetchError && (
+        <div id="fetch-warning-banner" className="mx-4 md:mx-8 mt-4 bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-2xl flex items-center justify-between text-xs font-medium" dir="rtl">
+          <div className="flex items-center gap-2">
+            <span className="text-base select-none">⚠️</span>
+            <span>{fetchError}</span>
+          </div>
+          <button 
+            type="button"
+            onClick={() => fetchAllData()} 
+            className="px-2.5 py-1 bg-amber-100 hover:bg-amber-200 rounded-lg text-amber-900 font-bold transition-all cursor-pointer"
+          >
+            إعادة المحاولة الدوريّة 🔄
+          </button>
+        </div>
+      )}
 
       {/* 2. STATS KPI DASHBOARD SUMMARY */}
       <section id="stats-summary" className="px-4 md:px-8 pt-6 pb-2 grid grid-cols-2 lg:grid-cols-4 gap-4">
