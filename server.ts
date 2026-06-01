@@ -257,6 +257,17 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    await supabase.auth.signOut();
+    return res.json({ success: true, message: 'Logged out successfully' });
+  } catch (err: any) {
+    console.error('[Logout Error]', err.message);
+    return res.status(500).json({ success: false, error: 'حدث خطأ أثناء تسجيل الخروج' });
+  }
+});
+
 // Dynamic User Management API
 app.get('/api/users', async (req, res) => {
   try {

@@ -89,6 +89,30 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
     return dayNames[day];
   };
 
+  const getCardTemplateDate = (dayOfWeek: number): string => {
+    const yemenNow = getYemenTime();
+    const currentJsDay = yemenNow.getDay(); // 0 = Sun, 1 = Mon, 2 = Tue, 3 = Wed, 4 = Thu, 5 = Fri, 6 = Sat
+    
+    // Map JS Day index to our day index (0: Sat, 1: Sun, ..., 5: Thu)
+    const jsToOur = [1, 2, 3, 4, 5, -1, 0]; // Sun=1, Mon=2, Tue=3, Wed=4, Thu=5, Fri=-1, Sat=0
+    const ourCurrentDay = jsToOur[currentJsDay];
+    
+    if (ourCurrentDay === -1) {
+      // Today is Friday (rigid day off). Next booking slots can start from Saturday.
+      const daysToAdd = 1 + dayOfWeek;
+      const targetDate = new Date(yemenNow.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+      return targetDate.toISOString().split('T')[0];
+    }
+
+    let diff = dayOfWeek - ourCurrentDay;
+    if (diff < 0) {
+      diff += 7;
+    }
+    
+    const targetDate = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
+    return targetDate.toISOString().split('T')[0];
+  };
+
   const targetDayOfWeek = getDayOfWeekFromDate(filterDate);
 
   // Filter schedules based on today/selected date and doctor name filter
@@ -318,6 +342,8 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                 const doc = getDoctorForSchedule(sch);
                 if (!doc) return null;
 
+                const cardTemplateDate = getCardTemplateDate(sch.day_of_week);
+
                 // Calculate the real-time date-scoped remaining seats
                 const activeBookingsForDate = bookings.filter(b => 
                   b.schedule_id === sch.id && 
@@ -362,12 +388,12 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                       <div className="flex flex-col items-start text-left">
                         <div className="flex items-center gap-2">
                           <span className="text-2xl md:text-3xl font-black text-[#1a1a1a] leading-none">
-                            {getArabicDayName(filterDate)}
+                            {getArabicDayName(cardTemplateDate)}
                           </span>
                           <CalendarDays className="h-7 w-7 text-slate-500" />
                         </div>
                         <span className="text-2xl md:text-3xl font-black text-[#1a1a1a] mt-2 tracking-wide font-sans">
-                          {formatDateToArabicNumerals(filterDate)}
+                          {formatDateToArabicNumerals(cardTemplateDate)}
                         </span>
                       </div>
 

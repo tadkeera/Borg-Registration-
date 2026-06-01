@@ -142,16 +142,23 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     try {
-      localStorage.removeItem('isLoggedIn');
-      localStorage.removeItem('role');
-      localStorage.removeItem('authToken');
-      localStorage.removeItem('receptionistName');
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (err) {
+      console.warn('Backend logout failed:', err);
+    }
+
+    try {
+      localStorage.clear();
     } catch (e) {
       console.warn('LocalStorage access failed:', e);
     }
 
+    // Force flush data state cache immediately to prevent session token/data leakage
+    setDoctors([]);
+    setSchedules([]);
+    setBookings([]);
     setIsLoggedIn(false);
     setAuthToken(null);
     setRole('admin');
