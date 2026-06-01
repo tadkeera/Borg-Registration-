@@ -194,17 +194,17 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
     setCronLoading('cleanup');
     setCronResult({ type: '', text: '' });
     try {
-      const res = await fetch('/api/cron/cleanup-bookings', { method: 'POST' });
+      const res = await fetch('/api/cron/daily-pipeline', { method: 'POST' });
       const data = await res.json();
       setCronResult({
         type: 'success',
-        text: data.message || 'تم تنظيف الحجوزات غير المسددة بنجاح.'
+        text: data.message || 'تم تشغيل المهام اليومية المتكاملة وتصفية الحجوزات بنجاح.'
       });
       onReloadAllData();
     } catch (err: any) {
       setCronResult({
         type: 'danger',
-        text: 'فشل تشغيل كرون جوب التنظيف في الخادم.'
+        text: 'فشل تشغيل كرون جوب الأتمتة اليومية في الخادم.'
       });
     } finally {
       setCronLoading(null);
@@ -218,7 +218,7 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
     setCronLoading('weekly');
     setCronResult({ type: '', text: '' });
     try {
-      const res = await fetch('/api/cron/reset-weekly', { method: 'POST' });
+      const res = await fetch('/api/cron/weekly-reset', { method: 'POST' });
       const data = await res.json();
       setCronResult({
         type: 'success',
@@ -229,7 +229,7 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
     } catch (err: any) {
       setCronResult({
         type: 'danger',
-        text: 'فشل إعادة الجدولة الأسبوعية.'
+        text: 'فشل إعادة الجدولة الأسبوعية والتصفير.'
       });
     } finally {
       setCronLoading(null);
@@ -554,7 +554,7 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
                       1. تصفية الحجوزات غير مدفوعة الصيانة (48 ساعة)
                     </span>
                     <span className="text-[10px] text-slate-400 leading-relaxed block mt-1">
-                      ينظف الطلبات بانتظار السداد لمدة تزيد عن 48 ساعة ويجعل الحجز ملغياً (Cancelled) مع إعادة ترميم المقاعد المتاحة في الجدول تلقائياً.
+                      ينظف الطلبات بانتظار السداد لمدة تزيد عن 48 ساعة ويجعل الحجز ملغياً (Cancelled). كما يقوم هذا الأنبوب التلقائي بإرسال رسائل تذكيرية بالسداد للمرضى بعد مرور 24 ساعة على حجزهم المعلق، بالإضافة إلى إرسال تنبيهات الحضور الطبية قبل الموعد بـ 24 ساعة.
                     </span>
                     <span className="inline-flex mt-1.5 px-2 py-0.5 bg-slate-100 text-[9px] font-bold text-slate-500 rounded border border-slate-200">
                       تنفيذ تلقائي: يومي (00:00 منتصف الليل)
@@ -587,7 +587,7 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
                       2. إعادة جدولة وتصفير السعة الأسبوعية (الخميس 10:00 مساءً)
                     </span>
                     <span className="text-[10px] text-slate-400 leading-relaxed block mt-1">
-                      يقوم بإرجاع سعة مواعيد الأطباء إلى السعات القصوى ومسح كافة جلسات ومراحل الحجز على الواتساب لمنع تداخل الاستجابات بحلول ععلة عيادات الجمعة.
+                      يقوم بإعادة تصفير سعة مواعيد الأطباء الأسبوعية ومسح كافة جلسات ومراحل حجز البوت على الواتساب تلقائياً كل خميس الساعة 10:00 مساءً بتوقيت اليمن استعداداً للدورة الأسبوعية المقبلة.
                     </span>
                     <span className="inline-flex mt-1.5 px-2 py-0.5 bg-blue-50 text-[9px] font-bold text-blue-700 rounded border border-blue-100">
                       تنفيذ تلقائي: كل خميس (10:00 م بتوقيت اليمن)

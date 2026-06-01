@@ -832,7 +832,7 @@ app.post('/api/bookings/:id/send-reminder', async (req, res) => {
 
     const reminderMessage = `السلام عليكم ورحمة الله وبركاته، 🌹\n` +
       `عزيزنا المريض: *${patientName}* المحترم،\n\n` +
-      `نود تذكيركم بأن لديكم موعداً عيادياً اليوم مع الدكتور: *${doctorName}*\n` +
+      `نود تذكيركم بأن لديكم موعداً اليوم مع الدكتور: *${doctorName}*\n` +
       `📅 *تاريخ الموعد اليوم:* ${bookingDate}\n` +
       `⏰ *فترة الموعد:* ${shiftText}\n\n` +
       `📍 يرجى منكم تأكيد حضوركم من خلال الرد على هذه الرسالة بأحد الخيارات التالية:\n` +
@@ -1745,8 +1745,8 @@ app.get('/api/cron/last-weekly-report', async (req, res) => {
  * -------------------------------------------------------------------------
  */
 
-// 1. Appointment Reminder (Sends WhatsApp reminder 24 hours prior)
-app.all('/api/cron/reminders', async (req, res) => {
+// 1. Unified 3-in-1 Daily Automation Pipeline
+app.all('/api/cron/daily-pipeline', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (process.env.NODE_ENV === 'production' && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -1754,100 +1754,192 @@ app.all('/api/cron/reminders', async (req, res) => {
 
   try {
     const supabase = getSupabase();
-    
-    // Compute tomorrow's date string in Yemen timezone (UTC+3)
+
+    // 0. Fetch Active WhatsApp toggle settings
+    const { data: wsData } = await supabase
+      .from('whatsapp_settings')
+      .select('*')
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle();
+
+    let dailyRemindersEnabled = true;
+    if (wsData && 'daily_reminders_enabled' in wsData) {
+      dailyRemindersEnabled = !!wsData.daily_reminders_enabled;
+    }
+
+    console.log(`[Express Daily Pipeline] WhatsApp output state: ${dailyRemindersEnabled}`);
+
+    const resultsSummary: any = {};
+
+    // -------------------------------------------------------------------------
+    // PHASE 1: Auto-Cancellation (The 48-Hour Expiry)
+    // -------------------------------------------------------------------------
+    const threshold48 = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const { data: expiredList, error: expiredErr } = await supabase
+      .from('bookings')
+      .select('id, patient_name, status, payment_status')
+      .lte('created_at', threshold48);
+
+    if (expiredErr) throw expiredErr;
+
+    const toCancel = (expiredList || []).filter(b => b.status === 'pending' || b.payment_status === 'pending');
+    let cancelledCount = 0;
+
+    for (const b of toCancel) {
+      const { error: cancelErr } = await supabase
+        .from('bookings')
+        .update({ status: 'cancelled', payment_status: 'cancelled' })
+        .eq('id', b.id);
+      if (!cancelErr) cancelledCount++;
+    }
+
+    resultsSummary.cancelled = {
+      totalFound: toCancel.length,
+      successfullyCancelled: cancelledCount
+    };
+
+    // -------------------------------------------------------------------------
+    // HUGGING FACE SENDER HELPER
+    // -------------------------------------------------------------------------
+    const sendHFMessage = async (phone: string, text: string) => {
+      try {
+        const hfUrl = 'https://waleedoo-borg-whatsapp-server-1.hf.space/api/send-message';
+        const response = await fetch(hfUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: phone, message: text })
+        });
+        return { phone, ok: response.ok, status: response.status };
+      } catch (err: any) {
+        return { phone, ok: false, error: err.message };
+      }
+    };
+
+    // -------------------------------------------------------------------------
+    // PHASE 2: Pending Grace Reminder (The 24-Hour Alert after Booking)
+    // -------------------------------------------------------------------------
+    const threshold24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: graceList, error: graceErr } = await supabase
+      .from('bookings')
+      .select('id, patient_phone, status, payment_status')
+      .lte('created_at', threshold24)
+      .gt('created_at', threshold48);
+
+    if (graceErr) throw graceErr;
+
+    const toRemindGrace = (graceList || []).filter(b => b.status === 'pending' || b.payment_status === 'pending');
+    let graceSentCount = 0;
+
+    if (dailyRemindersEnabled && toRemindGrace.length > 0) {
+      const graceMessage = `⏳ *تذكير هام بشأن حجزكم المعلق:*\n\nعزيزنا المريض، نفيدكم علماً بأنه متبقي *يوم واحد فقط (24 ساعة)* لتأكيد حجزكم ودفع رسوم التسجيل المقررة عبر الحسابات الرسمية للمستشفى.\n\nيرجى التكرم بإتمام عملية السداد لتفادي إلغاء الحجز تلقائياً بنهاية اليوم وإتاحة المقعد لمرضى آخرين.\n\n*إدارة مستشفى برج الاطباء *`;
+
+      const promises = toRemindGrace.map(b => sendHFMessage(b.patient_phone, graceMessage));
+      const results = await Promise.allSettled(promises);
+
+      for (let i = 0; i < results.length; i++) {
+        const resVal = results[i];
+        if (resVal.status === 'fulfilled' && resVal.value.ok) {
+          graceSentCount++;
+          try {
+            await supabase.from('whatsapp_logs').insert([{
+              phone: toRemindGrace[i].patient_phone,
+              direction: 'out',
+              message: graceMessage,
+              timestamp: getYemenTime().toISOString()
+            }]);
+          } catch (_) {}
+        }
+      }
+    }
+
+    resultsSummary.graceReminders = {
+      totalEligible: toRemindGrace.length,
+      successfullyDispatched: graceSentCount,
+      skippedDueToConfig: !dailyRemindersEnabled
+    };
+
+    // -------------------------------------------------------------------------
+    // PHASE 3: Confirmed Medical Reminder (24 Hours Before Appointment)
+    // -------------------------------------------------------------------------
     const utcNow = new Date().getTime();
     const yemenTomorrow = new Date(utcNow + (3 * 60 * 60 * 1000) + (24 * 60 * 60 * 1000));
     const tomorrowStr = yemenTomorrow.toISOString().split('T')[0];
 
-    console.log(`[Reminder Express Cron] Sweeping bookings scheduled for tomorrow: ${tomorrowStr}`);
-
-    const { data: bookings, error } = await supabase
+    const { data: confirmedTomorrow, error: tomorrowErr } = await supabase
       .from('bookings')
       .select('*, doctor:doctors(name)')
       .eq('booking_date', tomorrowStr)
       .eq('status', 'confirmed')
       .eq('verified_by_whatsapp', false);
 
-    if (error) throw error;
+    if (tomorrowErr) throw tomorrowErr;
 
-    if (!bookings || bookings.length === 0) {
-      return res.json({ success: true, message: 'No reminders to send for tomorrow.', date: tomorrowStr });
-    }
+    let confirmedSentCount = 0;
 
-    let sentCount = 0;
-    for (const b of bookings) {
-      const patientPhone = b.patient_phone;
-      const patientName = b.patient_name;
-      const doctorName = b.doctor ? b.doctor.name : 'الطبيب المختص';
-      const queueNumber = b.queue_number;
-      const shift = b.shift === 'Evening' ? 'المسائية' : 'الصباحية';
+    if (dailyRemindersEnabled && confirmedTomorrow && confirmedTomorrow.length > 0) {
+      const getConfirmedText = (b: any) => {
+        const patientName = b.patient_name || 'العزيز';
+        const docName = b.doctor ? b.doctor.name : 'طبيب العيادة';
+        const queueNum = b.queue_number;
+        const shiftText = b.shift === 'Evening' ? 'المسائية (مساءً)' : 'الصباحية (صباحاً)';
 
-      const arabicMessage = `🚨 *تذكير بموعد حجز الطبيب*\n` +
-        `مرحباً بك يا ${patientName}،\n\n` +
-        `نود تذكيرك بموعد حجزك المؤكد غداً *(${tomorrowStr})* لدى مستشفى برج الأطباء:\n\n` +
-        `👨‍⚕️ *الطبيب:* د. ${doctorName}\n` +
-        `🔢 *رقم دورك في القائمة:* ${queueNumber}\n` +
-        `⏰ *الفترة:* ${shift} (يرجى الحضور في الوقت المحدد وتأكيد حضوركم بجهة الاستقبال)\n\n` +
-        `نتمنى لكم دوام الصحة والعافية.\n` +
-        `🏥 *مستشفى برج الأطباء - Borg Alatiba*`;
+        return `🚨 *تذكير بموعد حجز الطبيب*\n\n` +
+          `عزيزنا المريض: *${patientName}* المحترم،\n\n` +
+          `نود تذكيركم بأن لديكم موعداً مؤكداً غداً لدى مستشفى برج الأطباء:\n\n` +
+          `👨‍⚕️ *الطبيب المختص:* د. ${docName}\n` +
+          `🔢 *رقم دوركم في القائمة:* ${queueNum}\n` +
+          `⏰ *الفترة:* ${shiftText} (يرجى الحضور في الوقت المحدد وتأكيد حضوركم بجهة الاستقبال)\n\n` +
+          `نتمنى لكم دوام الصحة والعافية.\n` +
+          `🏥 *مستشفى برج الأطباء - Borg Alatiba*`;
+      };
 
-      let sentSuccess = false;
-      const provider = process.env.WHATSAPP_PROVIDER || 'ultramsg';
+      const promises = confirmedTomorrow.map(b => sendHFMessage(b.patient_phone, getConfirmedText(b)));
+      const results = await Promise.allSettled(promises);
 
-      if (provider === 'whapi') {
-        const whapiToken = process.env.WHAPI_TOKEN;
-        const resWhapi = await fetch('https://gate.whapi.cloud/messages/text', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${whapiToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            to: patientPhone.replace('+', ''),
-            body: arabicMessage
-          })
-        });
-        sentSuccess = resWhapi.ok;
-      } else {
-        const instanceId = process.env.ULTRAMSG_INSTANCE_ID;
-        const ultraToken = process.env.ULTRAMSG_TOKEN;
-        
-        const resUltra = await fetch(`https://api.ultramsg.com/${instanceId}/messages/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            token: ultraToken || '',
-            to: patientPhone,
-            body: arabicMessage
-          })
-        });
-        sentSuccess = resUltra.ok;
-      }
+      for (let i = 0; i < results.length; i++) {
+        const resVal = results[i];
+        if (resVal.status === 'fulfilled' && resVal.value.ok) {
+          confirmedSentCount++;
+          await supabase
+            .from('bookings')
+            .update({ verified_by_whatsapp: true })
+            .eq('id', confirmedTomorrow[i].id);
 
-      if (sentSuccess) {
-        await supabase
-          .from('bookings')
-          .update({ verified_by_whatsapp: true })
-          .eq('id', b.id);
-        sentCount++;
+          try {
+            await supabase.from('whatsapp_logs').insert([{
+              phone: confirmedTomorrow[i].patient_phone,
+              direction: 'out',
+              message: getConfirmedText(confirmedTomorrow[i]),
+              timestamp: getYemenTime().toISOString()
+            }]);
+          } catch (_) {}
+        }
       }
     }
+
+    resultsSummary.confirmedReminders = {
+      totalEligible: confirmedTomorrow?.length || 0,
+      successfullyDispatched: confirmedSentCount,
+      skippedDueToConfig: !dailyRemindersEnabled,
+      targetDate: tomorrowStr
+    };
 
     res.json({
       success: true,
-      message: `Successfully processed reminders!`,
-      sentCount,
-      totalToSend: bookings.length
+      message: 'Unified Daily Automation pipeline completed.',
+      timestamp: getYemenTime().toISOString(),
+      resultsSummary
     });
+
   } catch (err: any) {
-    console.error('[Reminder Express Cron Exception]', err.message);
+    console.error('[Daily Pipeline Express Exception]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 2. Weekly Bookings Cleanup & Administration Email Report
-app.all('/api/cron/cleanup', async (req, res) => {
+// 2. Weekly System Reset (Thursday 10 PM Yemen Time / UTC+3)
+app.all('/api/cron/weekly-reset', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (process.env.NODE_ENV === 'production' && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -1858,7 +1950,7 @@ app.all('/api/cron/cleanup', async (req, res) => {
     const resendApiKey = process.env.RESEND_API_KEY;
     const adminEmail = process.env.ADMIN_REPORT_EMAIL || 'waleedsaleemmohammed@gmail.com';
 
-    // 1. Fetch total counts/breakdowns before wipe
+    // 1. Fetch statistics before cleaning
     const { data: bookings, error: fetchErr } = await supabase
       .from('bookings')
       .select('*, doctor:doctors(name)');
@@ -1882,7 +1974,7 @@ app.all('/api/cron/cleanup', async (req, res) => {
       doctorHtmlList += `<li>👨‍⚕️ د. ${name}: ${count} حجز</li>`;
     }
 
-    // 2. Erase Bookings records from Supabase
+    // 2. Erase Bookings records
     const { error: deleteErr } = await supabase
       .from('bookings')
       .delete()
@@ -1890,10 +1982,10 @@ app.all('/api/cron/cleanup', async (req, res) => {
 
     if (deleteErr) throw deleteErr;
 
-    // Reset weekly capacity using DB RPC trigger
+    // Reset weekly capacity via RPC / Direct DB fallbacks
     const { error: rpcErr } = await supabase.rpc('reset_weekly_schedules_and_queues');
     if (rpcErr) {
-      console.warn('RPC execution missed in Express context, performing direct DB fallbacks...', rpcErr);
+      console.warn('RPC execution missed in weekly-reset, executing manual fallback...');
       const { data: schedules } = await supabase.from('schedules').select('*');
       if (schedules) {
         for (const s of schedules) {
@@ -1901,6 +1993,31 @@ app.all('/api/cron/cleanup', async (req, res) => {
         }
       }
       await supabase.from('bot_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    }
+
+    // Save report cache
+    const savedReport = {
+      timestamp: getYemenTime().toISOString(),
+      stats: {
+        totalBookings,
+        confirmedCount,
+        pendingCount,
+        cancelledCount,
+        paidCount
+      },
+      doctorStats
+    };
+
+    try {
+      await supabase
+        .from('whatsapp_sessions')
+        .upsert({
+          space_server_id: 'weekly_report_cache',
+          session_data: JSON.stringify(savedReport),
+          updated_at: new Date().toISOString()
+        });
+    } catch (upsertErr: any) {
+      console.error('Failed to cache weekly report in reset endpoint:', upsertErr.message);
     }
 
     // 3. Resend Dispatch
@@ -1955,75 +2072,9 @@ app.all('/api/cron/cleanup', async (req, res) => {
       },
       emailStatus
     });
+
   } catch (err: any) {
     console.error('[Weekly Reset Express Cron Exception]', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 3. Pending Booking Timeout (Erase unconfirmed bookings older than 48 hours)
-app.all('/api/cron/pending-timeout', async (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (process.env.NODE_ENV === 'production' && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  try {
-    const supabase = getSupabase();
-    const thresholdDate = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-
-    console.log(`[Pending Express Cron Sweep] Sweeping bookings created before: ${thresholdDate}`);
-
-    const { data: expired, error: fetchErr } = await supabase
-      .from('bookings')
-      .select('id, schedule_id, patient_name')
-      .eq('status', 'pending')
-      .lt('created_at', thresholdDate);
-
-    if (fetchErr) throw fetchErr;
-
-    if (!expired || expired.length === 0) {
-      return res.json({ success: true, message: 'No expired pending bookings found.' });
-    }
-
-    let releasedCount = 0;
-    for (const b of expired) {
-      // 1. Recover schedule capacity
-      const { data: schedule } = await supabase
-        .from('schedules')
-        .select('available_capacity, max_capacity')
-        .eq('id', b.schedule_id)
-        .single();
-
-      if (schedule) {
-        const nextCapacity = Math.min(schedule.max_capacity, schedule.available_capacity + 1);
-        await supabase
-          .from('schedules')
-          .update({ available_capacity: nextCapacity })
-          .eq('id', b.schedule_id);
-      }
-
-      // 2. Erase row from DB
-      const { error: deleteErr } = await supabase
-        .from('bookings')
-        .delete()
-        .eq('id', b.id);
-
-      if (!deleteErr) {
-        releasedCount++;
-      }
-    }
-
-    res.json({
-      success: true,
-      message: 'Pending booking timeout sweep executed successfully!',
-      statistics: {
-        totalFound: expired.length,
-        successfullyReleased: releasedCount
-      }
-    });
-  } catch (err: any) {
-    console.error('[Pending Timeout Express Cron Exception]', err.message);
     res.status(500).json({ error: err.message });
   }
 });

@@ -2,16 +2,12 @@
   "version": 2,
   "crons": [
     {
-      "path": "/api/cron/reminders",
-      "schedule": "0 7 * * *"
-    },
-    {
-      "path": "/api/cron/cleanup",
-      "schedule": "0 19 * * 4"
-    },
-    {
-      "path": "/api/cron/pending-timeout",
+      "path": "/api/cron/daily-pipeline",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/weekly-reset",
+      "schedule": "0 19 * * 4"
     }
   ],
   "builds": [
