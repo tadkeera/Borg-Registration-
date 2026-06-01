@@ -85,7 +85,6 @@ export default function App() {
       const docsData = await docsRes.json();
       if (Array.isArray(docsData)) {
         setDoctors(docsData);
-        setFetchError(null);
       } else {
         throw new Error('تنسيق بيانات الأطباء غير صالح');
       }
@@ -113,6 +112,9 @@ export default function App() {
       } else {
         throw new Error('تنسيق بيانات الحجوزات غير صالح');
       }
+
+      // If we reach here, all data was pulled successfully, reset any prior sync errors.
+      setFetchError(null);
     } catch (err: any) {
       if (err.name === 'AbortError') {
         // Ignored: abort is expected and clean
@@ -138,13 +140,13 @@ export default function App() {
       await fetchAllData();
       
       if (isMounted) {
-        // Debounce / Delay subsequent background sync triggers by 4000ms sequentially
-        // to prevent overlapping requests or hammering the database connections.
-        syncTimeoutRef.current = setTimeout(runSyncLoop, 4000);
+        // Debounce / Delay subsequent background sync triggers by 3000ms sequentially
+        // as requested, keeping Vercel, Supabase, and WhatsApp server states perfectly synchronized.
+        syncTimeoutRef.current = setTimeout(runSyncLoop, 3000);
       }
     };
 
-    // Rule 3: Debounce the initial trigger by 500ms on mount/hot-reload
+    // Debounce the initial trigger by 500ms on mount/hot-reload
     syncTimeoutRef.current = setTimeout(runSyncLoop, 500);
 
     return () => {

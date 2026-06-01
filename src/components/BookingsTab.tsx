@@ -46,8 +46,11 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
   const [refreshingStatus, setRefreshingStatus] = useState(false);
 
   // New Date and Doctor Name filters for doctor cards view
-  const [filterDate, setFilterDate] = useState<string>(getYemenTime().toISOString().split('T')[0]);
+  const [filterDate, setFilterDate] = useState<string>(''); // Default empty string means NO filter, uses actual today
   const [filterDoctorId, setFilterDoctorId] = useState<string>('all');
+
+  const actualTodayDate = getYemenTime().toISOString().split('T')[0];
+  const effectiveDate = filterDate || actualTodayDate;
 
   // Filters for selected scheduler's bookings
   const [search, setSearch] = useState('');
@@ -60,12 +63,12 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
   const [showAddModal, setShowAddModal] = useState(false);
   const [manualName, setManualName] = useState('');
   const [manualPhone, setManualPhone] = useState('967');
-  const [manualDate, setManualDate] = useState(filterDate);
+  const [manualDate, setManualDate] = useState(effectiveDate);
 
-  // Sync manual booking date with current filterDate
+  // Sync manual booking date with current effectiveDate
   useEffect(() => {
-    setManualDate(filterDate);
-  }, [filterDate]);
+    setManualDate(effectiveDate);
+  }, [effectiveDate]);
 
   // Helpers for mapping date to day of week
   const getDayOfWeekFromDate = (dateStr: string) => {
@@ -113,7 +116,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
     return targetDate.toISOString().split('T')[0];
   };
 
-  const targetDayOfWeek = getDayOfWeekFromDate(filterDate);
+  const targetDayOfWeek = getDayOfWeekFromDate(effectiveDate);
 
   // Filter schedules based on today/selected date and doctor name filter
   const displayedSchedules = schedules.filter(sch => {
@@ -236,7 +239,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
 
   const filteredBookings = bookings.filter(b => {
     if (b.schedule_id !== selectedSchId) return false;
-    if (b.booking_date !== filterDate) return false;
+    if (b.booking_date !== effectiveDate) return false;
     const matchesSearch = b.patient_name.toLowerCase().includes(search.toLowerCase()) || 
                           b.patient_phone.includes(search);
     const matchesStatus = statusFilter === 'all' || b.status === statusFilter;
@@ -254,10 +257,11 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
             {/* Display current date and manual refresh button */}
             <div className="flex flex-wrap items-center gap-3">
               <div className="bg-[#e2f1ff] text-[#0f5ca8] border-2 border-[#b9dbf8] px-6 py-4 rounded-[20px] flex items-center gap-4 shadow-[0_8px_20px_rgba(15,92,168,0.06)] select-none">
-                <div className="text-right">
-                  <span className="block text-[24pt] font-black font-sans leading-none">
-                    {getArabicDayName(filterDate)}، {filterDate}
+                <div className="text-right font-sans">
+                  <span className="block text-[21pt] font-black leading-none">
+                    {getArabicDayName(actualTodayDate)}، {formatDateToArabicNumerals(actualTodayDate)}
                   </span>
+                  <span className="block text-[10px] text-[#0f5ca8]/85 font-black mt-1">تاريخ اليوم الحالي الفعلي في النظام</span>
                 </div>
                 <div className="h-11 w-11 bg-[#0f5ca8]/10 rounded-xl flex items-center justify-center">
                   <CalendarClock className="h-6 w-6 text-[#0f5ca8]" />
@@ -304,15 +308,28 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
               </div>
             </div>
             
-            <div className="flex flex-wrap items-center gap-5 justify-start md:order-first">
+            <div className="flex flex-wrap items-end gap-5 justify-start md:order-first">
               <div className="flex flex-col items-start gap-1">
-                <label className="text-[11px] font-black text-slate-500">اختر التاريخ:</label>
-                <input
-                  type="date"
-                  value={filterDate}
-                  onChange={(e) => setFilterDate(e.target.value)}
-                  className="px-4 py-2 text-xs bg-white text-slate-800 border border-slate-200/80 rounded-[14px] focus:outline-none focus:ring-2 focus:ring-[#2d8f85]/55 focus:border-[#2d8f85] transition-all font-bold shadow-2xs"
-                />
+                <label className="text-[11px] font-black text-slate-500">اختر التاريخ للبحث:</label>
+                <div className="flex items-center gap-2.5">
+                  <input
+                    type="date"
+                    value={filterDate}
+                    onChange={(e) => setFilterDate(e.target.value)}
+                    className="px-4 py-2 text-xs bg-white text-slate-800 border border-slate-200/80 rounded-[14px] focus:outline-none focus:ring-2 focus:ring-[#2d8f85]/55 focus:border-[#2d8f85] transition-all font-bold shadow-2xs cursor-pointer"
+                  />
+                  {filterDate && filterDate !== actualTodayDate && (
+                    <button
+                      type="button"
+                      onClick={() => setFilterDate('')}
+                      className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-black rounded-xl hover:shadow-sm flex items-center gap-1 cursor-pointer transition-all active:scale-95 duration-155"
+                      title="الرجوع لليوم الفعلي الحالي"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      <span>إلغاء الفلتر والعودة ملقائياً اليوم الفعلي</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="flex flex-col items-start gap-1">
@@ -347,7 +364,7 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
                 // Calculate the real-time date-scoped remaining seats
                 const activeBookingsForDate = bookings.filter(b => 
                   b.schedule_id === sch.id && 
-                  b.booking_date === filterDate && 
+                  b.booking_date === effectiveDate && 
                   b.status !== 'cancelled' && 
                   b.payment_status !== 'cancelled'
                 );
