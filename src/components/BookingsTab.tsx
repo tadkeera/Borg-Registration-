@@ -10,8 +10,9 @@ import { HOSPITAL_LOGO } from '../utils/constants';
 
 function getYemenTime(): Date {
   const now = new Date();
-  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-  return new Date(utc + (3600000 * 3)); // Yemen UTC+3
+  // now.getTime() is already the UTC epoch in milliseconds.
+  // We simply add 3 hours (3 * 3600000 ms) to get the Yemen epoch.
+  return new Date(now.getTime() + (3600000 * 3));
 }
 
 function formatDateToArabicNumerals(dateStr: string): string {
