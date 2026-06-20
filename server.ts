@@ -50,10 +50,19 @@ const isVercel = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_VERSI
 // TIMEZONE & DATE UTILITIES (YEMEN UTC+3)
 // -------------------------------------------------------------------------
 function getYemenTime(): Date {
-  const now = new Date();
-  // now.getTime() is already the UTC epoch in milliseconds.
-  // We simply add 3 hours (3 * 3600000 ms) to get the Yemen epoch.
-  return new Date(now.getTime() + (3600000 * 3)); // Yemen is UTC + 3
+  const options: Intl.DateTimeFormatOptions = { timeZone: 'Asia/Aden', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false };
+  const parts = new Intl.DateTimeFormat('en-US', options).formatToParts(new Date());
+  let year = 2026, month = 6, day = 20, hour = 0, minute = 0, second = 0;
+  for (const part of parts) {
+    if (part.type === 'year') year = parseInt(part.value, 10);
+    if (part.type === 'month') month = parseInt(part.value, 10);
+    if (part.type === 'day') day = parseInt(part.value, 10);
+    if (part.type === 'hour') hour = parseInt(part.value, 10);
+    if (part.type === 'minute') minute = parseInt(part.value, 10);
+    if (part.type === 'second') second = parseInt(part.value, 10);
+  }
+  if (hour === 24) hour = 0;
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, second));
 }
 
 function getDayNameArabic(dayIndex: number): string {
@@ -2785,7 +2794,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
 
     let finalAnswer = "";
     try {
-      let response = await chat.sendMessage(messageText);
+      let response = await chat.sendMessage({ message: messageText });
       finalAnswer = response.text || '';
 
       // Handle Function Calling recursively
@@ -2796,13 +2805,15 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
            if (call.name && toolsMap[call.name]) {
               const toolResult = await toolsMap[call.name](call.args);
               
-              // @ts-ignore
-              response = await chat.sendMessage([{
-                  functionResponse: {
-                     name: call.name,
-                     response: toolResult
-                  }
-              }]);
+              response = await chat.sendMessage({
+                  // @ts-ignore
+                  message: [{
+                    functionResponse: {
+                       name: call.name,
+                       response: toolResult
+                    }
+                  }]
+              });
               finalAnswer = response.text || finalAnswer;
            } else {
               break;
@@ -2812,7 +2823,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
       }
     } catch(err: any) {
       console.error(err);
-      finalAnswer = "عذرا، النظام يواجه صعوبة مؤقتة في معالجة طلبك المعقد. الرجاء المحاولة لاحقا.";
+      finalAnswer = "Error: " + err.message;
     }
 
     if (!finalAnswer) {

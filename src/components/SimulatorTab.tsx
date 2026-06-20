@@ -48,7 +48,7 @@ export default function SimulatorTab({ onSendMessageCallback }: SimulatorTabProp
         id: log.id,
         sender: log.direction === 'in' ? 'user' : 'bot',
         text: log.message,
-        timestamp: new Date(log.timestamp).toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' })
+        timestamp: new Date(log.timestamp).toLocaleTimeString('ar-YE', { timeZone: 'Asia/Aden', hour: '2-digit', minute: '2-digit' })
       })).reverse(); // Oldest first
 
       if (mappedBubbles.length === 0) {
@@ -56,7 +56,7 @@ export default function SimulatorTab({ onSendMessageCallback }: SimulatorTabProp
           id: 'default-1',
           sender: 'bot',
           text: 'مرحباً بك في مُحاكي واتساب مستشفى برج الأطباء! 🏥\nيمكنك البدء في الحجز عن طريق إرسال كلمة "تسجيل" أو الرقم "1".',
-          timestamp: new Date().toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' })
+          timestamp: new Date().toLocaleTimeString('ar-YE', { timeZone: 'Asia/Aden', hour: '2-digit', minute: '2-digit' })
         });
       }
       setChatHistory(mappedBubbles);
@@ -91,7 +91,7 @@ export default function SimulatorTab({ onSendMessageCallback }: SimulatorTabProp
       id: `user-${Date.now()}`,
       sender: 'user',
       text,
-      timestamp: new Date().toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' })
+      timestamp: new Date().toLocaleTimeString('ar-YE', { timeZone: 'Asia/Aden', hour: '2-digit', minute: '2-digit' })
     };
     setChatHistory(prev => [...prev, userBubble]);
     setInputText('');
@@ -133,7 +133,7 @@ export default function SimulatorTab({ onSendMessageCallback }: SimulatorTabProp
           id: `sys-${Date.now()}`,
           sender: 'bot',
           text: 'تم إعادة تهيئة الجلسة بنجاح لرقم الهاتف هذا. أرسل "تسجيل" للبدء.',
-          timestamp: new Date().toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' })
+          timestamp: new Date().toLocaleTimeString('ar-YE', { timeZone: 'Asia/Aden', hour: '2-digit', minute: '2-digit' })
         }
       ]);
       setActiveSession(null);

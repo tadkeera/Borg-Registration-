@@ -9,10 +9,19 @@ import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleA
 import { HOSPITAL_LOGO } from '../utils/constants';
 
 function getYemenTime(): Date {
-  const now = new Date();
-  // now.getTime() is already the UTC epoch in milliseconds.
-  // We simply add 3 hours (3 * 3600000 ms) to get the Yemen epoch.
-  return new Date(now.getTime() + (3600000 * 3));
+  const options: Intl.DateTimeFormatOptions = { timeZone: 'Asia/Aden', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false };
+  const parts = new Intl.DateTimeFormat('en-US', options).formatToParts(new Date());
+  let year = 2026, month = 6, day = 20, hour = 0, minute = 0, second = 0;
+  for (const part of parts) {
+    if (part.type === 'year') year = parseInt(part.value, 10);
+    if (part.type === 'month') month = parseInt(part.value, 10);
+    if (part.type === 'day') day = parseInt(part.value, 10);
+    if (part.type === 'hour') hour = parseInt(part.value, 10);
+    if (part.type === 'minute') minute = parseInt(part.value, 10);
+    if (part.type === 'second') second = parseInt(part.value, 10);
+  }
+  if (hour === 24) hour = 0;
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, second));
 }
 
 function formatDateToArabicNumerals(dateStr: string): string {
