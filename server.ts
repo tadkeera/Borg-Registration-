@@ -192,6 +192,16 @@ app.get('/api/supabase-status', async (req, res) => {
   }
 });
 
+app.get('/api/config/supabase', (req, res) => {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '';
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
+  
+  res.json({
+    supabaseUrl,
+    supabaseAnonKey
+  });
+});
+
 // 1. AUTHENTICATION & SECURITY
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;

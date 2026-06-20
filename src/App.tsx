@@ -134,20 +134,51 @@ export default function App() {
     if (!isLoggedIn) return;
 
     let isMounted = true;
+    let realtimeChannel: any = null;
 
-    const runSyncLoop = async () => {
-      if (!isMounted) return;
+    const setupRealtime = async () => {
+      // Fetch initial data payload exactly once first
       await fetchAllData();
       
-      if (isMounted) {
-        // Debounce / Delay subsequent background sync triggers by 3000ms sequentially
-        // as requested, keeping Vercel, Supabase, and WhatsApp server states perfectly synchronized.
-        syncTimeoutRef.current = setTimeout(runSyncLoop, 3000);
+      if (!isMounted) return;
+
+      try {
+        // Fetch Supabase configuration exposed by the Express API safely
+        const res = await fetch('/api/config/supabase');
+        if (!res.ok) return; // Silent return, falls back to static initial load or future polling
+        const { supabaseUrl, supabaseAnonKey } = await res.json();
+        
+        if (supabaseUrl && supabaseAnonKey && isMounted) {
+          // Initialize Supabase realtime client with vanilla js to avoid adding imports to root context
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+          // Listen to WebSockets on postgres_changes explicitly
+          realtimeChannel = supabase.channel('dashboard-db-changes')
+            .on(
+              'postgres_changes',
+              { event: '*', schema: 'public', table: 'bookings' },
+              () => fetchAllData() // Triggers unified re-sync 
+            )
+            .on(
+              'postgres_changes',
+              { event: '*', schema: 'public', table: 'doctors' },
+              () => fetchAllData()
+            )
+            .on(
+              'postgres_changes',
+              { event: '*', schema: 'public', table: 'schedules' },
+              () => fetchAllData()
+            )
+            .subscribe();
+        }
+      } catch (err) {
+        console.warn('Realtime Setup Error:', err);
       }
     };
 
-    // Debounce the initial trigger by 500ms on mount/hot-reload
-    syncTimeoutRef.current = setTimeout(runSyncLoop, 500);
+    // Initialize initial state fetch & socket binding
+    setupRealtime();
 
     return () => {
       isMounted = false;
@@ -156,6 +187,9 @@ export default function App() {
       }
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
+      }
+      if (realtimeChannel) {
+        realtimeChannel.unsubscribe();
       }
     };
   }, [isLoggedIn]);
