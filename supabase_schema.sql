@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS public.api_keys (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     key_value TEXT NOT NULL,
+    provider TEXT DEFAULT 'gemini',
     is_active BOOLEAN DEFAULT false,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );

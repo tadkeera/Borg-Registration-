@@ -172,21 +172,26 @@ function saveApiKeys(keys: any[]) {
   }
 }
 
-function updateEnvFile(activeKey: string) {
+function updateEnvFile(activeKey: string, provider = 'gemini') {
   const envPath = path.join(process.cwd(), '.env');
+  const envKeyName = provider === 'openai' ? 'OPENAI_API_KEY' :
+                     provider === 'anthropic' ? 'ANTHROPIC_API_KEY' :
+                     provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 
+                     'GEMINI_API_KEY';
   try {
     if (fs.existsSync(envPath)) {
       let envContent = fs.readFileSync(envPath, 'utf-8');
-      if (envContent.includes('GEMINI_API_KEY=')) {
-        envContent = envContent.replace(/GEMINI_API_KEY=.*/, `GEMINI_API_KEY="${activeKey}"`);
+      const regex = new RegExp(`${envKeyName}=.*`);
+      if (envContent.match(regex)) {
+        envContent = envContent.replace(regex, `${envKeyName}="${activeKey}"`);
       } else {
-        envContent += `\nGEMINI_API_KEY="${activeKey}"\n`;
+        envContent += `\n${envKeyName}="${activeKey}"\n`;
       }
       fs.writeFileSync(envPath, envContent, 'utf-8');
     } else {
-      fs.writeFileSync(envPath, `GEMINI_API_KEY="${activeKey}"\n`, 'utf-8');
+      fs.writeFileSync(envPath, `${envKeyName}="${activeKey}"\n`, 'utf-8');
     }
-    process.env.GEMINI_API_KEY = activeKey; // Update locally in current process too
+    process.env[envKeyName] = activeKey; // Update locally in current process too
   } catch (err) {
     console.error('Error updating .env file:', err);
   }
@@ -198,12 +203,12 @@ async function getApiKeysAsync(): Promise<any[]> {
     const { data, error } = await supabase.from('api_keys').select('*').order('created_at', { ascending: true });
     if (error) {
       console.warn('Supabase api_keys table error, falling back to local api_keys.json:', error.message);
-      return getApiKeys();
+      return getApiKeys().map(k => ({ provider: 'gemini', ...k }));
     }
-    return data || [];
+    return (data || []).map(k => ({ provider: 'gemini', ...k }));
   } catch (err: any) {
     console.warn('Supabase api_keys fetch exception, falling back to local api_keys.json:', err.message);
-    return getApiKeys();
+    return getApiKeys().map(k => ({ provider: 'gemini', ...k }));
   }
 }
 
@@ -212,6 +217,16 @@ async function saveApiKeyAsync(newKey: any): Promise<boolean> {
   try {
     const { error } = await supabase.from('api_keys').insert([newKey]);
     if (error) {
+      if (error.message.includes('column "provider"') || error.message.includes('provider')) {
+        // Fallback retry without provider field
+        const { provider, ...strippedKey } = newKey;
+        const { error: retryErr } = await supabase.from('api_keys').insert([strippedKey]);
+        if (retryErr) {
+          console.error('Error saving to Supabase api_keys on retry:', retryErr.message);
+          return false;
+        }
+        return true;
+      }
       console.error('Error saving to Supabase api_keys:', error.message);
       return false;
     }
@@ -244,28 +259,33 @@ app.get('/api/ai-keys', async (req, res) => {
     if (error) {
       // Table doesn't exist, flag it in headers so frontend can show SQL setup instructions
       res.setHeader('X-Supabase-Table-Missing', 'true');
-      const keys = getApiKeys();
+      const keys = getApiKeys().map(k => ({ provider: 'gemini', ...k }));
       return res.json(keys);
     }
-    return res.json(data || []);
+    const keysMapped = (data || []).map(k => ({ provider: 'gemini', ...k }));
+    return res.json(keysMapped);
   } catch (err) {
     res.setHeader('X-Supabase-Table-Missing', 'true');
-    const keys = getApiKeys();
+    const keys = getApiKeys().map(k => ({ provider: 'gemini', ...k }));
     return res.json(keys);
   }
 });
 
 app.post('/api/ai-keys', async (req, res) => {
-  const { name, key_value, is_active } = req.body;
+  const { name, key_value, provider, base_url, model_name, is_active } = req.body;
   if (!name || !key_value) return res.status(400).json({ error: 'الاسم والمفتاح مطلوبان' });
   
   // Sync locally (fallback)
   const keys = getApiKeys();
   const id = crypto.randomUUID();
+  const actualProvider = provider || 'gemini';
   const newKey = {
     id,
     name,
     key_value,
+    provider: actualProvider,
+    base_url: base_url || '',
+    model_name: model_name || '',
     is_active: is_active || keys.length === 0,
     created_at: new Date().toISOString()
   };
@@ -277,7 +297,7 @@ app.post('/api/ai-keys', async (req, res) => {
   saveApiKeys(keys);
 
   if (newKey.is_active) {
-    updateEnvFile(newKey.key_value);
+    updateEnvFile(newKey.key_value, actualProvider);
   }
 
   // Sync to Database
@@ -300,11 +320,13 @@ app.put('/api/ai-keys/:id/active', async (req, res) => {
   // Sync locally (fallback)
   const keys = getApiKeys();
   const keyIndex = keys.findIndex(k => k.id === id);
+  let localActiveProvider = 'gemini';
   if (keyIndex !== -1) {
     keys.forEach(k => k.is_active = false);
     keys[keyIndex].is_active = true;
+    localActiveProvider = keys[keyIndex].provider || 'gemini';
     saveApiKeys(keys);
-    updateEnvFile(keys[keyIndex].key_value);
+    updateEnvFile(keys[keyIndex].key_value, localActiveProvider);
   }
 
   // Sync to Database
@@ -324,20 +346,20 @@ app.put('/api/ai-keys/:id/active', async (req, res) => {
 
   if (updatedKeyFromDb) {
     if (updatedKeyFromDb.key_value) {
-      updateEnvFile(updatedKeyFromDb.key_value);
+      updateEnvFile(updatedKeyFromDb.key_value, updatedKeyFromDb.provider || 'gemini');
     }
-    return res.json(updatedKeyFromDb);
+    return res.json({ provider: 'gemini', ...updatedKeyFromDb });
   }
 
   if (keyIndex !== -1) {
-    res.json(keys[keyIndex]);
+    res.json({ provider: 'gemini', ...keys[keyIndex] });
   } else {
     res.status(404).json({ error: 'المفتاح غير موجود' });
   }
 });
 
 app.put('/api/ai-keys/:id', async (req, res) => {
-  const { name, key_value } = req.body;
+  const { name, key_value, provider, base_url, model_name } = req.body;
   const id = req.params.id;
   
   // Sync locally (fallback)
@@ -346,9 +368,12 @@ app.put('/api/ai-keys/:id', async (req, res) => {
   if (keyIndex !== -1) {
     if (name) keys[keyIndex].name = name;
     if (key_value) keys[keyIndex].key_value = key_value;
+    if (provider) keys[keyIndex].provider = provider;
+    if (base_url !== undefined) keys[keyIndex].base_url = base_url;
+    if (model_name !== undefined) keys[keyIndex].model_name = model_name;
     saveApiKeys(keys);
     if (keys[keyIndex].is_active && key_value) {
-      updateEnvFile(key_value);
+      updateEnvFile(key_value, keys[keyIndex].provider || 'gemini');
     }
   }
 
@@ -359,9 +384,22 @@ app.put('/api/ai-keys/:id', async (req, res) => {
     const updates: any = {};
     if (name) updates.name = name;
     if (key_value) updates.key_value = key_value;
+    if (provider) updates.provider = provider;
+    if (base_url !== undefined) updates.base_url = base_url;
+    if (model_name !== undefined) updates.model_name = model_name;
     const { data, error } = await supabase.from('api_keys').update(updates).eq('id', id).select().maybeSingle();
     if (error) {
-      res.setHeader('X-Supabase-Table-Missing', 'true');
+      if (error.message.includes('column "provider"') || error.message.includes('provider')) {
+        delete updates.provider;
+        const { data: retryData, error: retryErr } = await supabase.from('api_keys').update(updates).eq('id', id).select().maybeSingle();
+        if (retryErr) {
+          res.setHeader('X-Supabase-Table-Missing', 'true');
+        } else {
+          updatedKeyFromDb = retryData;
+        }
+      } else {
+        res.setHeader('X-Supabase-Table-Missing', 'true');
+      }
     } else {
       updatedKeyFromDb = data;
     }
@@ -371,13 +409,13 @@ app.put('/api/ai-keys/:id', async (req, res) => {
 
   if (updatedKeyFromDb) {
     if (updatedKeyFromDb.is_active && key_value) {
-      updateEnvFile(key_value);
+      updateEnvFile(key_value, updatedKeyFromDb.provider || 'gemini');
     }
-    return res.json(updatedKeyFromDb);
+    return res.json({ provider: 'gemini', ...updatedKeyFromDb });
   }
 
   if (keyIndex !== -1) {
-    res.json(keys[keyIndex]);
+    res.json({ provider: 'gemini', ...keys[keyIndex] });
   } else {
     res.status(404).json({ error: 'المفتاح غير موجود' });
   }
@@ -2863,12 +2901,11 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
   }
 
   try {
-    const { GoogleGenAI, Type } = await import('@google/genai');
-
     // Get active key from api_keys (with Supabase fetch preferred)
     const keys = await getApiKeysAsync();
     const activeKeyObj = keys.find(k => k.is_active);
     const apiKey = activeKeyObj ? activeKeyObj.key_value : process.env.GEMINI_API_KEY;
+    const provider = activeKeyObj ? (activeKeyObj.provider || 'gemini') : 'gemini';
 
     if (!apiKey) {
       const msg = "نظام الذكاء الاصطناعي معطل حاليا (مفتاح API مفقود). قم بإضافة مفتاح من إعدادات النظام.";
@@ -2877,33 +2914,22 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
       ]);
       return msg;
     }
-    const ai = new GoogleGenAI({ apiKey });
 
     // Fetch conversation history from whatsapp_logs
-    const { data: logs } = await supabase
+    const { data: dbLogs } = await supabase
       .from('whatsapp_logs')
       .select('message, direction, timestamp')
       .eq('phone', cleanPhone)
       .order('timestamp', { ascending: true })
       .limit(30);
 
-    const history = (logs || []).map(log => ({
-      role: log.direction === 'in' ? 'user' : 'model',
-      parts: [{ text: log.message }]
-    }));
-    
-    // Ensure history starts with 'user'
-    let validHistory = [];
-    for (let i = 0; i < history.length; i++) {
-       if (history[i].role === 'user') {
-          validHistory = history.slice(i);
-          break;
-       }
-    }
-    // Remove the current message from history to prevent duplication
-    if (validHistory.length > 0 && validHistory[validHistory.length - 1].parts[0].text === messageText) {
-       validHistory.pop();
-    }
+    // Filter to exclude the very last log if it corresponds to the current message (avoiding role confusion / duplications)
+    const logs = (dbLogs || []).filter((log, idx) => {
+      if (idx === (dbLogs || []).length - 1 && log.direction === 'in' && log.message === messageText) {
+        return false;
+      }
+      return true;
+    });
 
     const systemInstruction = `أنت مساعد ذكي ونشيط لمستشفى برج الأطباء في اليمن. تتحدث باللهجة اليمنية بطلاقة وبشكل طبيعي جداً.
 مهمتك مساعدة المرضى في الاستعلام عن الأطباء وحجز المواعيد.
@@ -2912,79 +2938,148 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
 - استوعب متطلبات المريض من نصه (مثلاً إذا قال "أشتي دكتور باطنية" ابحث فوراً عن أطباء الباطنية باستخدام الأداة getDoctors).
 - لحجز الموعد تأكد أولاً من وجود سعة متاحة في التاريخ والفترة المختارة باستخدام أداة checkCapacity.
 - اطلب الاسم الرباعي ليتم تسجيله بصورة رسمية.
-- عند اجراء الحجز بنجاح (باستخدام makeBooking)، أعطِ المريض رسالة تأكيد متكاملة ومنسقة، ضع رقم الدور בداخل دائرة رمزية مثل ❶ أو ❷...
+- عند اجراء الحجز بنجاح (باستخدام makeBooking)، أعطِ المريض رسالة تأكيد متكاملة ومنسقة، ضع رقم الدور في دائرة رمزية مثل ❶ أو ❷...
 - أخبره بصرامة ولطف أن آخر موعد لتسديد الرسوم هو خلال يومين وفقاً لتوقيت اليمن (Asia/Aden).
 - إذا سأل عن أمور خارج المستشفى أو الحجوزات، وجهه بسلاسة واعتذار سريع للعودة للموضوع الطبي.`;
 
-    // Initialize Database tools for Gemini
+    const getDbDayOfWeek = (dateStr: string): number | null => {
+      try {
+        const date = new Date(dateStr);
+        if (isNaN(date.getTime())) return null;
+        const jsDay = date.getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+        if (jsDay === 6) return 0; // Saturday
+        if (jsDay === 0) return 1; // Sunday
+        if (jsDay === 1) return 2; // Monday
+        if (jsDay === 2) return 3; // Tuesday
+        if (jsDay === 3) return 4; // Wednesday
+        if (jsDay === 4) return 5; // Thursday
+        return null; // Friday (day off)
+      } catch (_) {
+        return null;
+      }
+    };
+
+    // Initialize Database tools
     const getDoctors = async () => {
-      const { data, error } = await supabase.from('doctors').select('id, name, specialty');
-      if (error) return { error: error.message };
-      return { doctors: data };
+      const { data: doctors, error: dError } = await supabase.from('doctors').select('id, name, specialty').eq('is_active', true);
+      if (dError) return { error: dError.message };
+
+      const { data: schedules, error: sError } = await supabase.from('schedules').select('*');
+      
+      const doctorsWithSchedules = (doctors || []).map(doc => {
+        const docSchedules = (schedules || []).filter((s: any) => s.doctor_id === doc.id).map((s: any) => {
+          const daysAr = ['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
+          return {
+            dayName: daysAr[s.day_of_week] || 'غير محدد',
+            dayIndex: s.day_of_week,
+            startTime: s.start_time,
+            endTime: s.end_time,
+            maxCapacity: s.max_capacity,
+            availableCapacity: s.available_capacity
+          };
+        });
+        return {
+          id: doc.id,
+          name: doc.name,
+          specialty: doc.specialty,
+          schedules: docSchedules
+        };
+      });
+
+      return { doctors: doctorsWithSchedules };
     };
 
     const checkCapacity = async (args: any) => {
-      const { doctorId, dateStr, shift } = args;
+      const { doctorId, dateStr } = args;
+      const dbDay = getDbDayOfWeek(dateStr);
+      if (dbDay === null) {
+        return { error: 'يوم الجمعة إجازة رسمية لجميع الأطباء في مستشفى برج الأطباء.' };
+      }
+
       const { data: schedule, error: schError } = await supabase
         .from('schedules')
-        .select('id, max_capacity')
+        .select('id, max_capacity, start_time, end_time')
         .eq('doctor_id', doctorId)
-        .eq('shift', shift)
+        .eq('day_of_week', dbDay)
         .maybeSingle();
 
-      if (schError || !schedule) return { error: 'Schedule not found for that doctor and shift.' };
+      if (schError || !schedule) {
+        return { error: 'عذراً، الطبيب المختار لا يعمل أو غير متواجد في هذا اليوم المحدد.' };
+      }
 
       const { count, error: countError } = await supabase
         .from('bookings')
         .select('id', { count: 'exact', head: true })
         .eq('schedule_id', schedule.id)
-        .eq('booking_date', dateStr);
+        .eq('booking_date', dateStr)
+        .neq('status', 'cancelled');
 
       if (countError) return { error: countError.message };
 
       const currentCount = count || 0;
+      const remainingSlots = schedule.max_capacity - currentCount;
       return { 
-        hasCapacity: currentCount < schedule.max_capacity, 
-        remainingSlots: schedule.max_capacity - currentCount 
+        hasCapacity: remainingSlots > 0, 
+        maxCapacity: schedule.max_capacity,
+        bookedCount: currentCount,
+        remainingSlots: Math.max(0, remainingSlots),
+        workHours: `${schedule.start_time} - ${schedule.end_time}`
       };
     };
 
     const makeBooking = async (args: any) => {
       const { name, doctorId, dateStr, shift, customerPhone } = args;
-      const { data: schedule } = await supabase
+      const dbDay = getDbDayOfWeek(dateStr);
+      if (dbDay === null) {
+        return { error: 'يوم الجمعة إجازة رسمية لجميع الأطباء ولا تتوفر حجوزات فيه.' };
+      }
+
+      const { data: schedule, error: schError } = await supabase
         .from('schedules')
-        .select('id')
+        .select('id, max_capacity')
         .eq('doctor_id', doctorId)
-        .eq('shift', shift)
+        .eq('day_of_week', dbDay)
         .maybeSingle();
 
-      if (!schedule) return { error: 'Schedule not found for that doctor.' };
+      if (schError || !schedule) {
+        return { error: 'لا يوجد دكتور متواجد في هذا اليوم المختار.' };
+      }
 
-      const { count } = await supabase
+      const { count, error: countError } = await supabase
         .from('bookings')
         .select('id', { count: 'exact', head: true })
         .eq('schedule_id', schedule.id)
-        .eq('booking_date', dateStr);
+        .eq('booking_date', dateStr)
+        .neq('status', 'cancelled');
 
-      const queueNumber = (count || 0) + 1;
+      if (countError) return { error: countError.message };
+
+      const currentCount = count || 0;
+      if (currentCount >= schedule.max_capacity) {
+        return { error: 'عذراً، لا تتوفر سعة متبقية لدى هذا الطبيب في هذا اليوم وعليك تغييره.' };
+      }
+
+      const queueNumber = currentCount + 1;
 
       const { data, error } = await supabase
         .from('bookings')
         .insert([{
+          doctor_id: doctorId,
           patient_name: name,
           patient_phone: normalizePhone(customerPhone || phone),
           schedule_id: schedule.id,
           booking_date: dateStr,
           queue_number: queueNumber,
           status: 'confirmed',
-          payment_status: 'pending'
+          payment_status: 'pending',
+          shift: shift || 'Morning'
         }])
         .select()
         .single();
 
       if (error) return { error: error.message };
       
-      // Update session logic purely so UI is happy
+      // Update session state
       await supabase.from('bot_sessions').upsert({
          phone: cleanPhone,
          current_state: 'COMPLETED',
@@ -2992,7 +3087,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
          selected_doctor_id: doctorId,
          selected_schedule_id: schedule.id,
          selected_date: dateStr,
-         selected_shift: shift,
+         selected_shift: shift || 'Morning',
          last_interaction_at: getYemenTime().toISOString()
       }, { onConflict: 'phone' });
 
@@ -3001,53 +3096,76 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
 
     const toolsMap: Record<string, Function> = { getDoctors, checkCapacity, makeBooking };
 
-    const chat = ai.chats.create({
-      model: 'gemini-3.5-flash',
-      config: {
-        systemInstruction,
-        temperature: 0.7,
-        // @ts-ignore
-        tools: [{
-          functionDeclarations: [
-            {
-              name: 'getDoctors',
-              description: 'Fetch list of available doctors and their specialties to show to the patient.'
-            },
-            {
-              name: 'checkCapacity',
-              description: 'Check if a specific doctor has available slots on a given date and shift.',
-              parameters: {
-                type: Type.OBJECT,
-                properties: {
-                  doctorId: { type: Type.STRING, description: 'ID of the doctor (UUID)' },
-                  dateStr: { type: Type.STRING, description: 'Date string formatted as YYYY-MM-DD' },
-                  shift: { type: Type.STRING, description: 'Shift name exactly as "صباحية" or "مسائية"' }
-                },
-                required: ['doctorId', 'dateStr', 'shift']
-              }
-            },
-            {
-              name: 'makeBooking',
-              description: 'Book an appointment for a patient in the database. Call THIS when patient confirms name and slot.',
-              parameters: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING, description: 'Full quadruple patient name in Arabic' },
-                  doctorId: { type: Type.STRING, description: 'Doctor UUID' },
-                  dateStr: { type: Type.STRING, description: 'Date in YYYY-MM-DD format' },
-                  shift: { type: Type.STRING, description: 'Shift ("صباحية" / "مسائية")' },
-                  customerPhone: { type: Type.STRING, description: 'Patient phone number' }
-                },
-                required: ['name', 'doctorId', 'dateStr', 'shift', 'customerPhone']
-              }
-            }
-          ]
-        }]
-      }
-    });
-
     let finalAnswer = "";
     try {
+      if (provider === 'gemini') {
+      const { GoogleGenAI, Type } = await import('@google/genai');
+      const ai = new GoogleGenAI({ apiKey });
+
+      const history = (logs || []).map(log => ({
+        role: log.direction === 'in' ? 'user' : 'model',
+        parts: [{ text: log.message }]
+      }));
+      
+      // Ensure history starts with 'user'
+      let validHistory = [];
+      for (let i = 0; i < history.length; i++) {
+         if (history[i].role === 'user') {
+            validHistory = history.slice(i);
+            break;
+         }
+      }
+      // Remove the current message from history to prevent duplication
+      if (validHistory.length > 0 && validHistory[validHistory.length - 1].parts[0].text === messageText) {
+         validHistory.pop();
+      }
+
+      const chat = ai.chats.create({
+        model: activeKeyObj?.model_name || 'gemini-3.5-flash',
+        history: validHistory,
+        config: {
+          systemInstruction,
+          temperature: 0.7,
+          // @ts-ignore
+          tools: [{
+            functionDeclarations: [
+              {
+                name: 'getDoctors',
+                description: 'Fetch list of available doctors and their specialties to show to the patient.'
+              },
+              {
+                name: 'checkCapacity',
+                description: 'Check if a specific doctor has available slots on a given date and shift.',
+                parameters: {
+                  type: Type.OBJECT,
+                  properties: {
+                    doctorId: { type: Type.STRING, description: 'ID of the doctor (UUID)' },
+                    dateStr: { type: Type.STRING, description: 'Date string formatted as YYYY-MM-DD' },
+                    shift: { type: Type.STRING, description: 'Shift name exactly as "صباحية" or "مسائية"' }
+                  },
+                  required: ['doctorId', 'dateStr', 'shift']
+                }
+              },
+              {
+                name: 'makeBooking',
+                description: 'Book an appointment for a patient in the database. Call THIS when patient confirms name and slot.',
+                parameters: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING, description: 'Full quadruple patient name in Arabic' },
+                    doctorId: { type: Type.STRING, description: 'Doctor UUID' },
+                    dateStr: { type: Type.STRING, description: 'Date in YYYY-MM-DD format' },
+                    shift: { type: Type.STRING, description: 'Shift ("صباحية" / "مسائية")' },
+                    customerPhone: { type: Type.STRING, description: 'Patient phone number' }
+                  },
+                  required: ['name', 'doctorId', 'dateStr', 'shift', 'customerPhone']
+                }
+              }
+            ]
+          }]
+        }
+      });
+
       let response = await chat.sendMessage({ message: messageText });
       finalAnswer = response.text || '';
 
@@ -3075,15 +3193,271 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
            maxLoops--;
         }
       }
-    } catch(err: any) {
-      if (err.message && (err.message.includes("API Key") || err.message.includes("API key") || err.message.includes("key_invalid"))) {
-        console.warn("Gemini API Key is invalid. The user must update it in Settings.");
-        finalAnswer = "عذراً، مفتاح الذكاء الاصطناعي (Gemini API Key) غير صالح أو لم يتم العثور عليه. للأسف لن أتمكن من الرد حتى تقوم بتحديثه من إعدادات المشروع (Settings > API Keys).";
+    } else if (provider === 'openai' || provider === 'deepseek' || provider === 'custom') {
+      let endpoint = activeKeyObj?.base_url || 'https://api.openai.com/v1/chat/completions';
+      if (endpoint && !endpoint.endsWith('/chat/completions')) {
+         endpoint = endpoint.endsWith('/') ? `${endpoint}chat/completions` : `${endpoint}/chat/completions`;
+      }
+      let model = activeKeyObj?.model_name || 'gpt-4o-mini';
+      let headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      };
+
+      if (provider === 'deepseek') {
+        endpoint = activeKeyObj?.base_url || 'https://api.deepseek.com/chat/completions';
+        if (endpoint && !endpoint.endsWith('/chat/completions')) {
+           endpoint = endpoint.endsWith('/') ? `${endpoint}chat/completions` : `${endpoint}/chat/completions`;
+        }
+        model = activeKeyObj?.model_name || 'deepseek-chat';
+      } else if (provider === 'openai') {
+        endpoint = activeKeyObj?.base_url || 'https://api.openai.com/v1/chat/completions';
+        if (endpoint && !endpoint.endsWith('/chat/completions')) {
+           endpoint = endpoint.endsWith('/') ? `${endpoint}chat/completions` : `${endpoint}/chat/completions`;
+        }
+        model = activeKeyObj?.model_name || 'gpt-4o-mini';
+      }
+
+      const openaiMessages: any[] = [
+        { role: 'system', content: systemInstruction },
+        ...(logs || []).map(log => ({
+          role: log.direction === 'in' ? 'user' : 'assistant',
+          content: log.message
+        }))
+      ];
+      if (openaiMessages.length === 0 || openaiMessages[openaiMessages.length - 1].content !== messageText) {
+        openaiMessages.push({ role: 'user', content: messageText });
+      }
+
+      const openaiTools = [
+        {
+          type: 'function',
+          function: {
+            name: 'getDoctors',
+            description: 'Fetch list of available doctors and their specialties to show to the patient.'
+          }
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'checkCapacity',
+            description: 'Check if a specific doctor has available slots on a given date and shift.',
+            parameters: {
+              type: 'object',
+              properties: {
+                doctorId: { type: 'string', description: 'ID of the doctor (UUID)' },
+                dateStr: { type: 'string', description: 'Date string formatted as YYYY-MM-DD' },
+                shift: { type: 'string', description: 'Shift name exactly as "صباحية" or "مسائية"' }
+              },
+              required: ['doctorId', 'dateStr', 'shift']
+            }
+          }
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'makeBooking',
+            description: 'Book an appointment for a patient in the database. Call THIS when patient confirms name and slot.',
+            parameters: {
+              type: 'object',
+              properties: {
+                name: { type: 'string', description: 'Full quadruple patient name in Arabic' },
+                doctorId: { type: 'string', description: 'Doctor UUID' },
+                dateStr: { type: 'string', description: 'Date in YYYY-MM-DD format' },
+                shift: { type: 'string', description: 'Shift ("صباحية" / "مسائية")' },
+                customerPhone: { type: 'string', description: 'Patient phone number' }
+              },
+              required: ['name', 'doctorId', 'dateStr', 'shift', 'customerPhone']
+            }
+          }
+        }
+      ];
+
+      let maxLoops = 4;
+      while (maxLoops > 0) {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model,
+            messages: openaiMessages,
+            tools: openaiTools,
+            tool_choice: 'auto'
+          })
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`API Error (${response.status}): ${errText}`);
+        }
+
+        const data: any = await response.json();
+        const choice = data.choices?.[0];
+        const message = choice?.message;
+
+        if (!message) {
+          throw new Error("Empty response from AI Provider API");
+        }
+
+        openaiMessages.push(message);
+
+        if (message.content) {
+          finalAnswer = message.content;
+        }
+
+        if (message.tool_calls && message.tool_calls.length > 0) {
+          for (const toolCall of message.tool_calls) {
+            const func = toolCall.function;
+            const args = JSON.parse(func.arguments || '{}');
+            const toolResult = await toolsMap[func.name](args);
+
+            openaiMessages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              name: func.name,
+              content: JSON.stringify(toolResult)
+            });
+          }
+          maxLoops--;
+        } else {
+          break;
+        }
+      }
+    } else if (provider === 'anthropic') {
+      let endpoint = activeKeyObj?.base_url || 'https://api.anthropic.com/v1/messages';
+      let model = activeKeyObj?.model_name || 'claude-3-5-sonnet-20241022';
+      let headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      };
+
+      const base_messages = (logs || []).map(log => ({
+        role: log.direction === 'in' ? 'user' : 'assistant',
+        content: log.message
+      }));
+      
+      let validAnthropicMsgs = [];
+      for (let i = 0; i < base_messages.length; i++) {
+        if (base_messages[i].role === 'user') {
+          validAnthropicMsgs = base_messages.slice(i);
+          break;
+        }
+      }
+      
+      let r_messages: any[] = [];
+      let nextRole = 'user';
+      for (const msg of validAnthropicMsgs) {
+         if (msg.role === nextRole && msg.content && msg.content.trim()) {
+            r_messages.push({ role: msg.role, content: msg.content.trim() });
+            nextRole = nextRole === 'user' ? 'assistant' : 'user';
+         }
+      }
+      if (r_messages.length === 0 || r_messages[r_messages.length - 1].role !== 'user') {
+         if (r_messages.length > 0 && r_messages[r_messages.length - 1].role === 'assistant') {
+            r_messages.push({ role: 'user', content: messageText });
+         } else {
+            r_messages = [{ role: 'user', content: messageText }];
+         }
       } else {
-        console.error("Gemini Error:", err.message);
-        finalAnswer = "عذرا، النظام يواجه صعوبة مؤقتة في معالجة طلبك المعقد. الرجاء المحاولة لاحقا.";
+         r_messages.push({ role: 'assistant', content: "مرحباً بك. كيف يمكنني مساعدتك؟" });
+         r_messages.push({ role: 'user', content: messageText });
+      }
+
+      const claudeTools = [
+        {
+          name: 'getDoctors',
+          description: 'Fetch list of available doctors and their specialties to show to the patient.',
+          input_schema: { type: 'object', properties: {} }
+        },
+        {
+          name: 'checkCapacity',
+          description: 'Check if a specific doctor has available slots on a given date and shift.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              doctorId: { type: 'string', description: 'ID of the doctor (UUID)' },
+              dateStr: { type: 'string', description: 'Date string formatted as YYYY-MM-DD' },
+              shift: { type: 'string', description: 'Shift name exactly as "صباحية" or "مسائية"' }
+            },
+            required: ['doctorId', 'dateStr', 'shift']
+          }
+        },
+        {
+          name: 'makeBooking',
+          description: 'Book an appointment for a patient in the database. Call THIS when patient confirms name and slot.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Full quadruple patient name in Arabic' },
+              doctorId: { type: 'string', description: 'Doctor UUID' },
+              dateStr: { type: 'string', description: 'Date in YYYY-MM-DD format' },
+              shift: { type: 'string', description: 'Shift ("صباحية" / "مسائية")' },
+              customerPhone: { type: 'string', description: 'Patient phone number' }
+            },
+            required: ['name', 'doctorId', 'dateStr', 'shift', 'customerPhone']
+          }
+        }
+      ];
+
+      let maxLoops = 4;
+      while (maxLoops > 0) {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model,
+            system: systemInstruction,
+            max_tokens: 1548,
+            messages: r_messages,
+            tools: claudeTools
+          })
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Anthropic API Error (Status ${response.status}): ${errText}`);
+        }
+
+        const data: any = await response.json();
+        const assistantContent = data.content || [];
+        r_messages.push({ role: 'assistant', content: assistantContent });
+
+        const textBlock = assistantContent.find((b: any) => b.type === 'text');
+        if (textBlock && textBlock.text) {
+          finalAnswer = textBlock.text;
+        }
+
+        const toolUseBlocks = assistantContent.filter((b: any) => b.type === 'tool_use');
+        if (toolUseBlocks && toolUseBlocks.length > 0) {
+          const toolResultsContent = [];
+          for (const block of toolUseBlocks) {
+            const toolResult = await toolsMap[block.name](block.input || {});
+            toolResultsContent.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(toolResult)
+            });
+          }
+          r_messages.push({
+            role: 'user',
+            content: toolResultsContent
+          });
+          maxLoops--;
+        } else {
+          break;
+        }
       }
     }
+  } catch (err: any) {
+    if (err.message && (err.message.includes("API Key") || err.message.includes("API key") || err.message.includes("key_invalid") || err.message.includes("401"))) {
+      console.warn("AI API Key is invalid. The user must update it in Settings.");
+      finalAnswer = "عذراً، مفتاح الذكاء الاصطناعي الخاص بالنموذج المحدد غير صالح أو غير مرتبط بالخدمة بطريقة صحيحة. يرجى مراجعة وتحديث المفتاح الخاص بك من إعدادات النظام (Settings > API Keys).";
+    } else {
+      console.error("AI Error:", err.message);
+      finalAnswer = "عذرا، النظام يواجه صعوبة مؤقتة في معالجة طلبك المعقد عبر مزود الخدمة المختار. الرجاء المحاولة لاحقا.";
+    }
+  }
 
     if (!finalAnswer) {
       finalAnswer = "عذرا، لم أتمكن من الرد. يرجى المحاولة مرة أخرى.";

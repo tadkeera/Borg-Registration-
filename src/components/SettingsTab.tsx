@@ -52,6 +52,9 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
   const [editingKey, setEditingKey] = useState<any>(null);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyValue, setNewKeyValue] = useState('');
+  const [newKeyProvider, setNewKeyProvider] = useState('gemini');
+  const [newKeyBaseUrl, setNewKeyBaseUrl] = useState('');
+  const [newKeyModelName, setNewKeyModelName] = useState('');
   const [supabaseTableMissing, setSupabaseTableMissing] = useState(false);
 
   // Load WhatsApp settings
@@ -287,7 +290,14 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
       const res = await fetch('/api/ai-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newKeyName, key_value: newKeyValue, is_active: aiKeys.length === 0 })
+        body: JSON.stringify({ 
+          name: newKeyName, 
+          key_value: newKeyValue, 
+          provider: newKeyProvider, 
+          base_url: newKeyBaseUrl,
+          model_name: newKeyModelName,
+          is_active: aiKeys.length === 0 
+        })
       });
       if (!res.ok) throw new Error('فشل الحفظ');
       
@@ -295,6 +305,9 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
       setShowAddKeyModal(false);
       setNewKeyName('');
       setNewKeyValue('');
+      setNewKeyProvider('gemini');
+      setNewKeyBaseUrl('');
+      setNewKeyModelName('');
       alert('تم إضافة المفتاح بنجاح! سيتم استخدامه للدردشة مع البوت.');
     } catch (err: any) {
       alert(err.message || 'حدث خطأ.');
@@ -321,7 +334,13 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
       const res = await fetch(`/api/ai-keys/${editingKey.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newKeyName, key_value: newKeyValue })
+        body: JSON.stringify({ 
+          name: newKeyName, 
+          key_value: newKeyValue, 
+          provider: newKeyProvider,
+          base_url: newKeyBaseUrl,
+          model_name: newKeyModelName
+        })
       });
       if (!res.ok) throw new Error('فشل التحديث');
       
@@ -329,6 +348,9 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
       setEditingKey(null);
       setNewKeyName('');
       setNewKeyValue('');
+      setNewKeyProvider('gemini');
+      setNewKeyBaseUrl('');
+      setNewKeyModelName('');
       alert('تم تحديث المفتاح بنجاح!');
     } catch (err: any) {
       alert(err.message || 'حدث خطأ.');
@@ -657,73 +679,174 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
             )}
 
             {aiKeys.length === 0 ? (
-              <div className="text-center text-xs text-slate-400 py-3 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+               <div className="text-center text-xs text-slate-400 py-3 bg-slate-50 rounded-xl border border-dashed border-slate-200">
                 لا يوجد أي مفاتيح مضافة. لا يمكن للذكاء الاصطناعي الرد.
               </div>
             ) : (
               <div className="space-y-2">
-                {aiKeys.map((k) => (
-                  <div key={k.id} className={`flex items-center justify-between p-3 rounded-xl border ${k.is_active ? 'border-amber-400 bg-amber-50/30' : 'border-slate-100 bg-slate-50'}`}>
-                    <div className="flex items-center gap-2">
-                      <span className={`h-2.5 w-2.5 rounded-full ${k.is_active ? 'bg-amber-400' : 'bg-slate-300'}`}></span>
-                      <div>
-                        <p className="text-xs font-black text-slate-700">{k.name}</p>
-                        <p className="text-[10px] text-slate-500 font-mono mt-0.5">{k.key_value.slice(0, 8)}...{k.key_value.slice(-4)}</p>
+                {aiKeys.map((k) => {
+                  const prov = (k.provider || 'gemini').toLowerCase();
+                  const providerBadgeColor = 
+                    prov === 'openai' ? 'bg-emerald-500' :
+                    prov === 'anthropic' ? 'bg-orange-500' :
+                    prov === 'deepseek' ? 'bg-indigo-600' :
+                    'bg-teal-500';
+                  
+                  const providerNameAr = 
+                    prov === 'openai' ? 'OpenAI' :
+                    prov === 'anthropic' ? 'Claude' :
+                    prov === 'deepseek' ? 'DeepSeek' :
+                    'Gemini';
+
+                  return (
+                    <div key={k.id} className={`flex items-center justify-between p-3 rounded-xl border ${k.is_active ? 'border-amber-400 bg-amber-50/30' : 'border-slate-100 bg-slate-50'}`}>
+                      <div className="flex items-center gap-2">
+                        <span className={`h-2.5 w-2.5 rounded-full ${k.is_active ? 'bg-amber-400' : 'bg-slate-300'}`}></span>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-black text-slate-700">{k.name}</p>
+                            <span className={`px-1.5 py-0.5 text-[8.5px] font-black text-white rounded ${providerBadgeColor}`}>
+                              {providerNameAr}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-500 font-mono mt-0.5">{k.key_value.slice(0, 8)}...{k.key_value.slice(-4)}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {!k.is_active && isAdmin && (
+                          <button onClick={() => handleSetAiKeyActive(k.id)} className="text-[10px] bg-white border border-slate-200 px-2 py-1 rounded shadow-sm hover:bg-slate-50 cursor-pointer font-bold">
+                            تفعيل
+                          </button>
+                        )}
+                        {isAdmin && (
+                          <>
+                            <button 
+                              onClick={() => {
+                                setEditingKey(k);
+                                setNewKeyName(k.name);
+                                setNewKeyValue(k.key_value);
+                                setNewKeyProvider(k.provider || 'gemini');
+                                setNewKeyBaseUrl(k.base_url || '');
+                                setNewKeyModelName(k.model_name || '');
+                                setShowAddKeyModal(true);
+                              }} 
+                              className="text-blue-500 hover:bg-blue-50 p-1.5 rounded-lg transition cursor-pointer"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                            </button>
+                            <button onClick={() => handleDeleteAiKey(k.id)} className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition cursor-pointer">
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {!k.is_active && isAdmin && (
-                        <button onClick={() => handleSetAiKeyActive(k.id)} className="text-[10px] bg-white border border-slate-200 px-2 py-1 rounded shadow-sm hover:bg-slate-50 cursor-pointer font-bold">
-                          تفعيل
-                        </button>
-                      )}
-                      {isAdmin && (
-                        <>
-                          <button 
-                            onClick={() => {
-                              setEditingKey(k);
-                              setNewKeyName(k.name);
-                              setNewKeyValue(k.key_value);
-                              setShowAddKeyModal(true);
-                            }} 
-                            className="text-blue-500 hover:bg-blue-50 p-1.5 rounded-lg transition cursor-pointer"
-                          >
-                            <Edit3 className="h-3.5 w-3.5" />
-                          </button>
-                          <button onClick={() => handleDeleteAiKey(k.id)} className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition cursor-pointer">
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
             
             {/* Modal for adding/editing Key */}
             {showAddKeyModal && isAdmin && (
               <div className="absolute top-0 right-0 left-0 bottom-0 bg-white/95 z-10 rounded-2xl p-4 border border-slate-100 flex flex-col justify-center animate-in fade-in zoom-in duration-200 shadow-xl">
-                 <h4 className="text-xs font-black text-slate-800 mb-3 flex justify-between items-center">
+                 <h4 className="text-xs font-black text-slate-800 mb-2 flex justify-between items-center">
                    {editingKey ? 'تعديل المفتاح' : 'إضافة مفتاح جديد'}
-                   <button onClick={() => { setShowAddKeyModal(false); setEditingKey(null); setNewKeyName(''); setNewKeyValue(''); }} className="text-slate-400 hover:text-slate-600">×</button>
+                   <button onClick={() => { setShowAddKeyModal(false); setEditingKey(null); setNewKeyName(''); setNewKeyValue(''); setNewKeyProvider('gemini'); }} className="text-slate-400 hover:text-slate-600">×</button>
                  </h4>
-                 <input 
-                   type="text" 
-                   value={newKeyName} 
-                   onChange={e => setNewKeyName(e.target.value)} 
-                   placeholder="اسم المفتاح (مثال: مفتاح المطور الاول)" 
-                   className="w-full mb-3 px-3 py-2 bg-slate-50 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-amber-400"
-                 />
-                 <input 
-                   type="text" 
-                   value={newKeyValue} 
-                   onChange={e => setNewKeyValue(e.target.value)} 
-                   placeholder="القيمة (AIzaSy...)" 
-                   className="w-full mb-4 px-3 py-2 bg-slate-50 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-amber-400 font-mono"
-                 />
-                 <div className="flex justify-end gap-2">
-                    <button onClick={() => { setShowAddKeyModal(false); setEditingKey(null); setNewKeyName(''); setNewKeyValue(''); }} className="px-3 py-1.5 text-xs text-slate-600 font-bold hover:bg-slate-100 rounded-lg cursor-pointer">إلغاء</button>
+                 
+                 <div className="mb-2">
+                   <label className="text-[10px] font-bold text-slate-500 block mb-1">مزود خدمة الذكاء الاصطناعي</label>
+                   <select 
+                     value={newKeyProvider} 
+                     onChange={e => {
+                       const val = e.target.value;
+                       setNewKeyProvider(val);
+                       if (val === 'gemini') {
+                         setNewKeyBaseUrl('');
+                         setNewKeyModelName('gemini-2.5-flash');
+                       } else if (val === 'openai') {
+                         setNewKeyBaseUrl('https://api.openai.com/v1');
+                         setNewKeyModelName('gpt-4o-mini');
+                       } else if (val === 'anthropic') {
+                         setNewKeyBaseUrl('https://api.anthropic.com/v1');
+                         setNewKeyModelName('claude-3-5-sonnet-20241022');
+                       } else if (val === 'deepseek') {
+                         setNewKeyBaseUrl('https://api.deepseek.com/v1');
+                         setNewKeyModelName('deepseek-chat');
+                       } else {
+                         setNewKeyBaseUrl('');
+                         setNewKeyModelName('');
+                       }
+                     }} 
+                     className="w-full px-3 py-2 bg-slate-50 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-amber-400 font-bold"
+                   >
+                     <option value="gemini">جوجل جيميناي (Google Gemini)</option>
+                     <option value="openai">أوبن أيه آي (OpenAI GPT)</option>
+                     <option value="anthropic">أنثروبيك كلاود (Anthropic Claude)</option>
+                     <option value="deepseek">ديب سيك (DeepSeek)</option>
+                     <option value="custom">موفر مخصص (مثل Grok، أو OpenRouter، أو غيره)</option>
+                   </select>
+                 </div>
+
+                 {newKeyProvider !== 'gemini' && (
+                   <div className="grid grid-cols-2 gap-2 mb-2" dir="rtl">
+                     <div>
+                       <label className="text-[10px] font-bold text-slate-500 block mb-1">رابط الـ API الأساسي (Base URL)</label>
+                       <input 
+                         type="text" 
+                         value={newKeyBaseUrl} 
+                         onChange={e => setNewKeyBaseUrl(e.target.value)} 
+                         placeholder={
+                           newKeyProvider === 'openai' ? 'https://api.openai.com/v1' :
+                           newKeyProvider === 'anthropic' ? 'https://api.anthropic.com/v1' :
+                           newKeyProvider === 'deepseek' ? 'https://api.deepseek.com/v1' :
+                           'رابط الـ API الأساسي'
+                         } 
+                         className="w-full px-3 py-2 bg-slate-50 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-amber-400 font-mono text-[10px]"
+                       />
+                     </div>
+                     <div>
+                       <label className="text-[10px] font-bold text-slate-500 block mb-1">معرّف النموذج (Model ID)</label>
+                       <input 
+                         type="text" 
+                         value={newKeyModelName} 
+                         onChange={e => setNewKeyModelName(e.target.value)} 
+                         placeholder={
+                           newKeyProvider === 'openai' ? 'gpt-4o-mini' : 
+                           newKeyProvider === 'anthropic' ? 'claude-3-5-sonnet-20241022' :
+                           newKeyProvider === 'deepseek' ? 'deepseek-chat' :
+                           'اسم النموذج (مثال: grok-2)'
+                         } 
+                         className="w-full px-3 py-2 bg-slate-50 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-amber-400 font-mono text-[10px]"
+                       />
+                     </div>
+                   </div>
+                 )}
+
+                 <div className="mb-2">
+                   <label className="text-[10px] font-bold text-slate-500 block mb-1">اسم المفتاح المميز</label>
+                   <input 
+                     type="text" 
+                     value={newKeyName} 
+                     onChange={e => setNewKeyName(e.target.value)} 
+                     placeholder="اسم للتمييز (مثال: مفتاح المطور الاول)" 
+                     className="w-full px-3 py-2 bg-slate-50 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-amber-400"
+                   />
+                 </div>
+
+                 <div className="mb-3">
+                   <label className="text-[10px] font-bold text-slate-500 block mb-1">قيمة مفتاح الـ API</label>
+                   <input 
+                     type="text" 
+                     value={newKeyValue} 
+                     onChange={e => setNewKeyValue(e.target.value)} 
+                     placeholder="المفتاح (AIzaSy... أو sk-...)" 
+                     className="w-full px-3 py-2 bg-slate-50 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-amber-400 font-mono"
+                   />
+                 </div>
+
+                 <div className="flex justify-end gap-2 mt-1">
+                    <button onClick={() => { setShowAddKeyModal(false); setEditingKey(null); setNewKeyName(''); setNewKeyValue(''); setNewKeyProvider('gemini'); }} className="px-3 py-1.5 text-xs text-slate-600 font-bold hover:bg-slate-100 rounded-lg cursor-pointer">إلغاء</button>
                     <button onClick={editingKey ? handleUpdateAiKey : handleAddAiKey} disabled={loading} className="px-3 py-1.5 text-xs bg-amber-500 hover:bg-amber-600 text-white font-black rounded-lg cursor-pointer flex items-center gap-1 shadow">
                       {loading ? <Loader2 className="h-3 w-3 animate-spin"/> : <Save className="h-3 w-3" />}
                       {editingKey ? 'تحديث المفتاح' : 'حفظ وتفعيل'}
