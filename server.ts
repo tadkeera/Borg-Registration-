@@ -172,6 +172,26 @@ function saveApiKeys(keys: any[]) {
   }
 }
 
+function updateEnvFile(activeKey: string) {
+  const envPath = path.join(process.cwd(), '.env');
+  try {
+    if (fs.existsSync(envPath)) {
+      let envContent = fs.readFileSync(envPath, 'utf-8');
+      if (envContent.includes('GEMINI_API_KEY=')) {
+        envContent = envContent.replace(/GEMINI_API_KEY=.*/, `GEMINI_API_KEY="${activeKey}"`);
+      } else {
+        envContent += `\nGEMINI_API_KEY="${activeKey}"\n`;
+      }
+      fs.writeFileSync(envPath, envContent, 'utf-8');
+    } else {
+      fs.writeFileSync(envPath, `GEMINI_API_KEY="${activeKey}"\n`, 'utf-8');
+    }
+    process.env.GEMINI_API_KEY = activeKey; // Update locally in current process too
+  } catch (err) {
+    console.error('Error updating .env file:', err);
+  }
+}
+
 app.get('/api/ai-keys', (req, res) => {
   const keys = getApiKeys();
   res.json(keys);
@@ -196,6 +216,11 @@ app.post('/api/ai-keys', (req, res) => {
   
   keys.push(newKey);
   saveApiKeys(keys);
+
+  if (newKey.is_active) {
+    updateEnvFile(newKey.key_value);
+  }
+
   res.json(newKey);
 });
 
@@ -208,6 +233,26 @@ app.put('/api/ai-keys/:id/active', (req, res) => {
   keys.forEach(k => k.is_active = false);
   keys[keyIndex].is_active = true;
   saveApiKeys(keys);
+
+  updateEnvFile(keys[keyIndex].key_value);
+
+  res.json(keys[keyIndex]);
+});
+
+app.put('/api/ai-keys/:id', (req, res) => {
+  const { name, key_value } = req.body;
+  const keys = getApiKeys();
+  const id = req.params.id;
+  const keyIndex = keys.findIndex(k => k.id === id);
+  if (keyIndex === -1) return res.status(404).json({ error: 'المفتاح غير موجود' });
+  
+  if (name) keys[keyIndex].name = name;
+  if (key_value) keys[keyIndex].key_value = key_value;
+  saveApiKeys(keys);
+  
+  if (keys[keyIndex].is_active && key_value) {
+    updateEnvFile(key_value);
+  }
   res.json(keys[keyIndex]);
 });
 

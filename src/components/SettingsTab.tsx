@@ -49,6 +49,7 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
   const [showAiKeysSettings, setShowAiKeysSettings] = useState(false);
   const [aiKeys, setAiKeys] = useState<any[]>([]);
   const [showAddKeyModal, setShowAddKeyModal] = useState(false);
+  const [editingKey, setEditingKey] = useState<any>(null);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyValue, setNewKeyValue] = useState('');
 
@@ -302,6 +303,32 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
       await fetch(`/api/ai-keys/${id}/active`, { method: 'PUT' });
       await fetchAiKeys();
     } catch(err) {} finally { setLoading(false); }
+  };
+
+  const handleUpdateAiKey = async () => {
+    if (!editingKey || !newKeyName.trim() || !newKeyValue.trim()) {
+      alert('يرجى تعبئة اسم المفتاح وقيمته');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/ai-keys/${editingKey.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newKeyName, key_value: newKeyValue })
+      });
+      if (!res.ok) throw new Error('فشل التحديث');
+      
+      await fetchAiKeys();
+      setEditingKey(null);
+      setNewKeyName('');
+      setNewKeyValue('');
+      alert('تم تحديث المفتاح بنجاح!');
+    } catch (err: any) {
+      alert(err.message || 'حدث خطأ.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleDeleteAiKey = async (id: string) => {
@@ -624,9 +651,22 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
                         </button>
                       )}
                       {isAdmin && (
-                        <button onClick={() => handleDeleteAiKey(k.id)} className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition cursor-pointer">
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        <>
+                          <button 
+                            onClick={() => {
+                              setEditingKey(k);
+                              setNewKeyName(k.name);
+                              setNewKeyValue(k.key_value);
+                              setShowAddKeyModal(true);
+                            }} 
+                            className="text-blue-500 hover:bg-blue-50 p-1.5 rounded-lg transition cursor-pointer"
+                          >
+                            <Edit3 className="h-3.5 w-3.5" />
+                          </button>
+                          <button onClick={() => handleDeleteAiKey(k.id)} className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition cursor-pointer">
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -634,12 +674,12 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
               </div>
             )}
             
-            {/* Modal for adding Key */}
+            {/* Modal for adding/editing Key */}
             {showAddKeyModal && isAdmin && (
               <div className="absolute top-0 right-0 left-0 bottom-0 bg-white/95 z-10 rounded-2xl p-4 border border-slate-100 flex flex-col justify-center animate-in fade-in zoom-in duration-200 shadow-xl">
                  <h4 className="text-xs font-black text-slate-800 mb-3 flex justify-between items-center">
-                   إضافة مفتاح جديد
-                   <button onClick={() => setShowAddKeyModal(false)} className="text-slate-400 hover:text-slate-600">×</button>
+                   {editingKey ? 'تعديل المفتاح' : 'إضافة مفتاح جديد'}
+                   <button onClick={() => { setShowAddKeyModal(false); setEditingKey(null); setNewKeyName(''); setNewKeyValue(''); }} className="text-slate-400 hover:text-slate-600">×</button>
                  </h4>
                  <input 
                    type="text" 
@@ -656,10 +696,10 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
                    className="w-full mb-4 px-3 py-2 bg-slate-50 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-amber-400 font-mono"
                  />
                  <div className="flex justify-end gap-2">
-                    <button onClick={() => setShowAddKeyModal(false)} className="px-3 py-1.5 text-xs text-slate-600 font-bold hover:bg-slate-100 rounded-lg cursor-pointer">إلغاء</button>
-                    <button onClick={handleAddAiKey} disabled={loading} className="px-3 py-1.5 text-xs bg-amber-500 hover:bg-amber-600 text-white font-black rounded-lg cursor-pointer flex items-center gap-1 shadow">
+                    <button onClick={() => { setShowAddKeyModal(false); setEditingKey(null); setNewKeyName(''); setNewKeyValue(''); }} className="px-3 py-1.5 text-xs text-slate-600 font-bold hover:bg-slate-100 rounded-lg cursor-pointer">إلغاء</button>
+                    <button onClick={editingKey ? handleUpdateAiKey : handleAddAiKey} disabled={loading} className="px-3 py-1.5 text-xs bg-amber-500 hover:bg-amber-600 text-white font-black rounded-lg cursor-pointer flex items-center gap-1 shadow">
                       {loading ? <Loader2 className="h-3 w-3 animate-spin"/> : <Save className="h-3 w-3" />}
-                      حفظ وتفعيل
+                      {editingKey ? 'تحديث المفتاح' : 'حفظ وتفعيل'}
                     </button>
                  </div>
               </div>
