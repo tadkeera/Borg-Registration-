@@ -148,6 +148,76 @@ function webhookRateLimit(req: express.Request, res: express.Response, next: exp
 // REST API ENDPOINTS
 // -------------------------------------------------------------------------
 
+// --- AI KEYS API ---
+const API_KEYS_PATH = path.join(process.cwd(), 'api_keys.json');
+
+function getApiKeys() {
+  try {
+    if (!fs.existsSync(API_KEYS_PATH)) {
+       return [];
+    }
+    const data = fs.readFileSync(API_KEYS_PATH, 'utf-8');
+    return JSON.parse(data);
+  } catch (err) {
+    console.error('Error reading api keys:', err);
+    return [];
+  }
+}
+
+function saveApiKeys(keys: any[]) {
+  try {
+    fs.writeFileSync(API_KEYS_PATH, JSON.stringify(keys, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error writing api keys:', err);
+  }
+}
+
+app.get('/api/ai-keys', (req, res) => {
+  const keys = getApiKeys();
+  res.json(keys);
+});
+
+app.post('/api/ai-keys', (req, res) => {
+  const { name, key_value, is_active } = req.body;
+  if (!name || !key_value) return res.status(400).json({ error: 'الاسم والمفتاح مطلوبان' });
+  
+  const keys = getApiKeys();
+  const newKey = {
+    id: crypto.randomUUID(),
+    name,
+    key_value,
+    is_active: is_active || keys.length === 0,
+    created_at: new Date().toISOString()
+  };
+  
+  if (newKey.is_active) {
+    keys.forEach(k => k.is_active = false);
+  }
+  
+  keys.push(newKey);
+  saveApiKeys(keys);
+  res.json(newKey);
+});
+
+app.put('/api/ai-keys/:id/active', (req, res) => {
+  const keys = getApiKeys();
+  const id = req.params.id;
+  const keyIndex = keys.findIndex(k => k.id === id);
+  if (keyIndex === -1) return res.status(404).json({ error: 'المفتاح غير موجود' });
+  
+  keys.forEach(k => k.is_active = false);
+  keys[keyIndex].is_active = true;
+  saveApiKeys(keys);
+  res.json(keys[keyIndex]);
+});
+
+app.delete('/api/ai-keys/:id', (req, res) => {
+  const keys = getApiKeys();
+  const updatedKeys = keys.filter(k => k.id !== req.params.id);
+  saveApiKeys(updatedKeys);
+  res.json({ success: true });
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', serverTime: getYemenTime().toISOString(), timezone: 'Asia/Aden (UTC+3)' });
@@ -2615,9 +2685,14 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
 
   try {
     const { GoogleGenAI, Type } = await import('@google/genai');
-    const apiKey = process.env.GEMINI_API_KEY;
+
+    // Get active key from api_keys
+    const keys = getApiKeys();
+    const activeKeyObj = keys.find(k => k.is_active);
+    const apiKey = activeKeyObj ? activeKeyObj.key_value : process.env.GEMINI_API_KEY;
+
     if (!apiKey) {
-      const msg = "نظام الذكاء الاصطناعي معطل حاليا (مفتاح API مفقود).";
+      const msg = "نظام الذكاء الاصطناعي معطل حاليا (مفتاح API مفقود). قم بإضافة مفتاح من إعدادات النظام.";
       await supabase.from('whatsapp_logs').insert([
         { phone: cleanPhone, direction: 'out', message: msg, timestamp: getYemenTime().toISOString() }
       ]);

@@ -45,6 +45,13 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
   const [weeklyReport, setWeeklyReport] = useState<any>(null);
   const [reportLoading, setReportLoading] = useState(false);
 
+  // AI Keys settings
+  const [showAiKeysSettings, setShowAiKeysSettings] = useState(false);
+  const [aiKeys, setAiKeys] = useState<any[]>([]);
+  const [showAddKeyModal, setShowAddKeyModal] = useState(false);
+  const [newKeyName, setNewKeyName] = useState('');
+  const [newKeyValue, setNewKeyValue] = useState('');
+
   // Load WhatsApp settings
   const fetchSettings = async () => {
     try {
@@ -81,7 +88,18 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
   useEffect(() => {
     fetchSettings();
     fetchLastWeeklyReport();
+    fetchAiKeys();
   }, []);
+
+  const fetchAiKeys = async () => {
+    try {
+      const res = await fetch('/api/ai-keys');
+      const data = await res.json();
+      setAiKeys(data);
+    } catch (err) {
+      console.error('Error fetching ai keys:', err);
+    }
+  };
 
   const handleAddNewCard = () => {
     setCards([
@@ -250,6 +268,49 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const handleAddAiKey = async () => {
+    if (!newKeyName.trim() || !newKeyValue.trim()) {
+      alert('يرجى تعبئة اسم المفتاح وقيمته');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch('/api/ai-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newKeyName, key_value: newKeyValue, is_active: aiKeys.length === 0 })
+      });
+      if (!res.ok) throw new Error('فشل الحفظ');
+      
+      await fetchAiKeys();
+      setShowAddKeyModal(false);
+      setNewKeyName('');
+      setNewKeyValue('');
+      alert('تم إضافة المفتاح بنجاح! سيتم استخدامه للدردشة مع البوت.');
+    } catch (err: any) {
+      alert(err.message || 'حدث خطأ.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSetAiKeyActive = async (id: string) => {
+    setLoading(true);
+    try {
+      await fetch(`/api/ai-keys/${id}/active`, { method: 'PUT' });
+      await fetchAiKeys();
+    } catch(err) {} finally { setLoading(false); }
+  };
+
+  const handleDeleteAiKey = async (id: string) => {
+    if (!confirm('تأكيد مسح المفتاح؟')) return;
+    setLoading(true);
+    try {
+      await fetch(`/api/ai-keys/${id}`, { method: 'DELETE' });
+      await fetchAiKeys();
+    } catch(err) {} finally { setLoading(false); }
   };
 
   if (showWaApiSettings) {
@@ -517,6 +578,92 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
             >
               اعدادات واتساب api 🤖
             </button>
+          </div>
+
+          {/* AI Keys Setup Card */}
+          <div className="bg-white p-5 border border-slate-100 rounded-2xl shadow-sm space-y-4 relative">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="text-sm font-black text-slate-800 flex items-center">
+                <Sparkles className="h-4.5 w-4.5 text-amber-500 ml-1.5" />
+                مفاتيح الذكاء الاصطناعي (API Keys)
+              </h3>
+              {isAdmin && (
+                <button 
+                   onClick={() => setShowAddKeyModal(true)}
+                   className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition-colors cursor-pointer"
+                   title="إضافة مفتاح جديد"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            
+            <p className="text-xs text-slate-500 leading-relaxed font-bold">
+              قم بإضافة مفاتيح Gemini API الخاصة بك هنا. بعد اضافة المفتاح، سيبدأ التطبيق باستخدامه مباشرة للدردشة والمحاكاة.
+            </p>
+
+            {aiKeys.length === 0 ? (
+              <div className="text-center text-xs text-slate-400 py-3 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                لا يوجد أي مفاتيح مضافة. لا يمكن للذكاء الاصطناعي الرد.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {aiKeys.map((k) => (
+                  <div key={k.id} className={`flex items-center justify-between p-3 rounded-xl border ${k.is_active ? 'border-amber-400 bg-amber-50/30' : 'border-slate-100 bg-slate-50'}`}>
+                    <div className="flex items-center gap-2">
+                      <span className={`h-2.5 w-2.5 rounded-full ${k.is_active ? 'bg-amber-400' : 'bg-slate-300'}`}></span>
+                      <div>
+                        <p className="text-xs font-black text-slate-700">{k.name}</p>
+                        <p className="text-[10px] text-slate-500 font-mono mt-0.5">{k.key_value.slice(0, 8)}...{k.key_value.slice(-4)}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!k.is_active && isAdmin && (
+                        <button onClick={() => handleSetAiKeyActive(k.id)} className="text-[10px] bg-white border border-slate-200 px-2 py-1 rounded shadow-sm hover:bg-slate-50 cursor-pointer font-bold">
+                          تفعيل
+                        </button>
+                      )}
+                      {isAdmin && (
+                        <button onClick={() => handleDeleteAiKey(k.id)} className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition cursor-pointer">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            {/* Modal for adding Key */}
+            {showAddKeyModal && isAdmin && (
+              <div className="absolute top-0 right-0 left-0 bottom-0 bg-white/95 z-10 rounded-2xl p-4 border border-slate-100 flex flex-col justify-center animate-in fade-in zoom-in duration-200 shadow-xl">
+                 <h4 className="text-xs font-black text-slate-800 mb-3 flex justify-between items-center">
+                   إضافة مفتاح جديد
+                   <button onClick={() => setShowAddKeyModal(false)} className="text-slate-400 hover:text-slate-600">×</button>
+                 </h4>
+                 <input 
+                   type="text" 
+                   value={newKeyName} 
+                   onChange={e => setNewKeyName(e.target.value)} 
+                   placeholder="اسم المفتاح (مثال: مفتاح المطور الاول)" 
+                   className="w-full mb-3 px-3 py-2 bg-slate-50 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-amber-400"
+                 />
+                 <input 
+                   type="text" 
+                   value={newKeyValue} 
+                   onChange={e => setNewKeyValue(e.target.value)} 
+                   placeholder="القيمة (AIzaSy...)" 
+                   className="w-full mb-4 px-3 py-2 bg-slate-50 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-amber-400 font-mono"
+                 />
+                 <div className="flex justify-end gap-2">
+                    <button onClick={() => setShowAddKeyModal(false)} className="px-3 py-1.5 text-xs text-slate-600 font-bold hover:bg-slate-100 rounded-lg cursor-pointer">إلغاء</button>
+                    <button onClick={handleAddAiKey} disabled={loading} className="px-3 py-1.5 text-xs bg-amber-500 hover:bg-amber-600 text-white font-black rounded-lg cursor-pointer flex items-center gap-1 shadow">
+                      {loading ? <Loader2 className="h-3 w-3 animate-spin"/> : <Save className="h-3 w-3" />}
+                      حفظ وتفعيل
+                    </button>
+                 </div>
+              </div>
+            )}
           </div>
         </div>
 
