@@ -2823,7 +2823,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
       }
     } catch(err: any) {
       console.error(err);
-      finalAnswer = "Error: " + err.message;
+      finalAnswer = "عذرا، النظام يواجه صعوبة مؤقتة في معالجة طلبك المعقد. الرجاء المحاولة لاحقا.";
     }
 
     if (!finalAnswer) {
