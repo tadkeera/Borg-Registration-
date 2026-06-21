@@ -2822,8 +2822,13 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
         }
       }
     } catch(err: any) {
-      console.error(err);
-      finalAnswer = "عذرا، النظام يواجه صعوبة مؤقتة في معالجة طلبك المعقد. الرجاء المحاولة لاحقا.";
+      if (err.message && (err.message.includes("API Key") || err.message.includes("API key") || err.message.includes("key_invalid"))) {
+        console.warn("Gemini API Key is invalid. The user must update it in Settings.");
+        finalAnswer = "عذراً، مفتاح الذكاء الاصطناعي (Gemini API Key) غير صالح أو لم يتم العثور عليه. للأسف لن أتمكن من الرد حتى تقوم بتحديثه من إعدادات المشروع (Settings > API Keys).";
+      } else {
+        console.error("Gemini Error:", err.message);
+        finalAnswer = "عذرا، النظام يواجه صعوبة مؤقتة في معالجة طلبك المعقد. الرجاء المحاولة لاحقا.";
+      }
     }
 
     if (!finalAnswer) {
@@ -2854,7 +2859,7 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
     return finalAnswer;
 
   } catch (err: any) {
-    console.error('Gemini Whatsapp Flow error:', err);
+    console.error('Gemini Whatsapp Flow error:', err.message);
     const fallbackMessage = "عذراً، حدث خطأ داخلي في نظام الذكاء الاصطناعي.";
     await supabase.from('whatsapp_logs').insert([
       { phone: cleanPhone, direction: 'out', message: fallbackMessage, timestamp: getYemenTime().toISOString() }
