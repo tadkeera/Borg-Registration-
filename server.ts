@@ -192,18 +192,78 @@ function updateEnvFile(activeKey: string) {
   }
 }
 
-app.get('/api/ai-keys', (req, res) => {
-  const keys = getApiKeys();
-  res.json(keys);
+async function getApiKeysAsync(): Promise<any[]> {
+  const supabase = getSupabase();
+  try {
+    const { data, error } = await supabase.from('api_keys').select('*').order('created_at', { ascending: true });
+    if (error) {
+      console.warn('Supabase api_keys table error, falling back to local api_keys.json:', error.message);
+      return getApiKeys();
+    }
+    return data || [];
+  } catch (err: any) {
+    console.warn('Supabase api_keys fetch exception, falling back to local api_keys.json:', err.message);
+    return getApiKeys();
+  }
+}
+
+async function saveApiKeyAsync(newKey: any): Promise<boolean> {
+  const supabase = getSupabase();
+  try {
+    const { error } = await supabase.from('api_keys').insert([newKey]);
+    if (error) {
+      console.error('Error saving to Supabase api_keys:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err: any) {
+    console.error('Exception saving to Supabase api_keys:', err.message);
+    return false;
+  }
+}
+
+async function deleteApiKeyAsync(id: string): Promise<boolean> {
+  const supabase = getSupabase();
+  try {
+    const { error } = await supabase.from('api_keys').delete().eq('id', id);
+    if (error) {
+      console.error('Error deleting from Supabase api_keys:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err: any) {
+    console.error('Exception deleting from Supabase api_keys:', err.message);
+    return false;
+  }
+}
+
+app.get('/api/ai-keys', async (req, res) => {
+  const supabase = getSupabase();
+  try {
+    const { data, error } = await supabase.from('api_keys').select('*').order('created_at', { ascending: true });
+    if (error) {
+      // Table doesn't exist, flag it in headers so frontend can show SQL setup instructions
+      res.setHeader('X-Supabase-Table-Missing', 'true');
+      const keys = getApiKeys();
+      return res.json(keys);
+    }
+    return res.json(data || []);
+  } catch (err) {
+    res.setHeader('X-Supabase-Table-Missing', 'true');
+    const keys = getApiKeys();
+    return res.json(keys);
+  }
 });
 
-app.post('/api/ai-keys', (req, res) => {
+app.post('/api/ai-keys', async (req, res) => {
   const { name, key_value, is_active } = req.body;
   if (!name || !key_value) return res.status(400).json({ error: 'الاسم والمفتاح مطلوبان' });
   
+  // Sync locally (fallback)
   const keys = getApiKeys();
+  const id = crypto.randomUUID();
   const newKey = {
-    id: crypto.randomUUID(),
+    id,
     name,
     key_value,
     is_active: is_active || keys.length === 0,
@@ -213,7 +273,6 @@ app.post('/api/ai-keys', (req, res) => {
   if (newKey.is_active) {
     keys.forEach(k => k.is_active = false);
   }
-  
   keys.push(newKey);
   saveApiKeys(keys);
 
@@ -221,45 +280,120 @@ app.post('/api/ai-keys', (req, res) => {
     updateEnvFile(newKey.key_value);
   }
 
+  // Sync to Database
+  const saved = await saveApiKeyAsync(newKey);
+  if (saved && newKey.is_active) {
+    const supabase = getSupabase();
+    try {
+      await supabase.from('api_keys').update({ is_active: false }).neq('id', id);
+    } catch (_) {}
+  } else if (!saved) {
+    res.setHeader('X-Supabase-Table-Missing', 'true');
+  }
+
   res.json(newKey);
 });
 
-app.put('/api/ai-keys/:id/active', (req, res) => {
-  const keys = getApiKeys();
+app.put('/api/ai-keys/:id/active', async (req, res) => {
   const id = req.params.id;
-  const keyIndex = keys.findIndex(k => k.id === id);
-  if (keyIndex === -1) return res.status(404).json({ error: 'المفتاح غير موجود' });
   
-  keys.forEach(k => k.is_active = false);
-  keys[keyIndex].is_active = true;
-  saveApiKeys(keys);
-
-  updateEnvFile(keys[keyIndex].key_value);
-
-  res.json(keys[keyIndex]);
-});
-
-app.put('/api/ai-keys/:id', (req, res) => {
-  const { name, key_value } = req.body;
+  // Sync locally (fallback)
   const keys = getApiKeys();
-  const id = req.params.id;
   const keyIndex = keys.findIndex(k => k.id === id);
-  if (keyIndex === -1) return res.status(404).json({ error: 'المفتاح غير موجود' });
-  
-  if (name) keys[keyIndex].name = name;
-  if (key_value) keys[keyIndex].key_value = key_value;
-  saveApiKeys(keys);
-  
-  if (keys[keyIndex].is_active && key_value) {
-    updateEnvFile(key_value);
+  if (keyIndex !== -1) {
+    keys.forEach(k => k.is_active = false);
+    keys[keyIndex].is_active = true;
+    saveApiKeys(keys);
+    updateEnvFile(keys[keyIndex].key_value);
   }
-  res.json(keys[keyIndex]);
+
+  // Sync to Database
+  const supabase = getSupabase();
+  let updatedKeyFromDb = null;
+  try {
+    await supabase.from('api_keys').update({ is_active: false }).neq('id', id);
+    const { data, error } = await supabase.from('api_keys').update({ is_active: true }).eq('id', id).select().maybeSingle();
+    if (error) {
+      res.setHeader('X-Supabase-Table-Missing', 'true');
+    } else {
+      updatedKeyFromDb = data;
+    }
+  } catch (err) {
+    res.setHeader('X-Supabase-Table-Missing', 'true');
+  }
+
+  if (updatedKeyFromDb) {
+    if (updatedKeyFromDb.key_value) {
+      updateEnvFile(updatedKeyFromDb.key_value);
+    }
+    return res.json(updatedKeyFromDb);
+  }
+
+  if (keyIndex !== -1) {
+    res.json(keys[keyIndex]);
+  } else {
+    res.status(404).json({ error: 'المفتاح غير موجود' });
+  }
 });
 
-app.delete('/api/ai-keys/:id', (req, res) => {
+app.put('/api/ai-keys/:id', async (req, res) => {
+  const { name, key_value } = req.body;
+  const id = req.params.id;
+  
+  // Sync locally (fallback)
   const keys = getApiKeys();
-  const updatedKeys = keys.filter(k => k.id !== req.params.id);
+  const keyIndex = keys.findIndex(k => k.id === id);
+  if (keyIndex !== -1) {
+    if (name) keys[keyIndex].name = name;
+    if (key_value) keys[keyIndex].key_value = key_value;
+    saveApiKeys(keys);
+    if (keys[keyIndex].is_active && key_value) {
+      updateEnvFile(key_value);
+    }
+  }
+
+  // Sync to Database
+  const supabase = getSupabase();
+  let updatedKeyFromDb = null;
+  try {
+    const updates: any = {};
+    if (name) updates.name = name;
+    if (key_value) updates.key_value = key_value;
+    const { data, error } = await supabase.from('api_keys').update(updates).eq('id', id).select().maybeSingle();
+    if (error) {
+      res.setHeader('X-Supabase-Table-Missing', 'true');
+    } else {
+      updatedKeyFromDb = data;
+    }
+  } catch (err) {
+    res.setHeader('X-Supabase-Table-Missing', 'true');
+  }
+
+  if (updatedKeyFromDb) {
+    if (updatedKeyFromDb.is_active && key_value) {
+      updateEnvFile(key_value);
+    }
+    return res.json(updatedKeyFromDb);
+  }
+
+  if (keyIndex !== -1) {
+    res.json(keys[keyIndex]);
+  } else {
+    res.status(404).json({ error: 'المفتاح غير موجود' });
+  }
+});
+
+app.delete('/api/ai-keys/:id', async (req, res) => {
+  const id = req.params.id;
+  
+  // Sync locally (fallback)
+  const keys = getApiKeys();
+  const updatedKeys = keys.filter(k => k.id !== id);
   saveApiKeys(updatedKeys);
+
+  // Sync to Database
+  await deleteApiKeyAsync(id);
+
   res.json({ success: true });
 });
 
@@ -2731,8 +2865,8 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
   try {
     const { GoogleGenAI, Type } = await import('@google/genai');
 
-    // Get active key from api_keys
-    const keys = getApiKeys();
+    // Get active key from api_keys (with Supabase fetch preferred)
+    const keys = await getApiKeysAsync();
     const activeKeyObj = keys.find(k => k.is_active);
     const apiKey = activeKeyObj ? activeKeyObj.key_value : process.env.GEMINI_API_KEY;
 

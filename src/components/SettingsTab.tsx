@@ -8,7 +8,7 @@ import { WhatsAppSettings } from '../types';
 import { 
   Settings, Shield, Key, Eye, CheckCircle, RefreshCcw, Send, 
   CalendarDays, Loader2, Sparkles, AlertCircle, FileText, 
-  Plus, Trash2, Save, Edit3, ArrowRight, Download
+  Plus, Trash2, Save, Edit3, ArrowRight, Download, AlertTriangle
 } from 'lucide-react';
 
 interface SettingsTabProps {
@@ -52,6 +52,7 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
   const [editingKey, setEditingKey] = useState<any>(null);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyValue, setNewKeyValue] = useState('');
+  const [supabaseTableMissing, setSupabaseTableMissing] = useState(false);
 
   // Load WhatsApp settings
   const fetchSettings = async () => {
@@ -95,6 +96,11 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
   const fetchAiKeys = async () => {
     try {
       const res = await fetch('/api/ai-keys');
+      if (res.headers.get('X-Supabase-Table-Missing') === 'true') {
+        setSupabaseTableMissing(true);
+      } else {
+        setSupabaseTableMissing(false);
+      }
       const data = await res.json();
       setAiKeys(data);
     } catch (err) {
@@ -628,6 +634,27 @@ export default function SettingsTab({ role, onReloadAllData }: SettingsTabProps)
             <p className="text-xs text-slate-500 leading-relaxed font-bold">
               قم بإضافة مفاتيح Gemini API الخاصة بك هنا. بعد اضافة المفتاح، سيبدأ التطبيق باستخدامه مباشرة للدردشة والمحاكاة.
             </p>
+
+            {supabaseTableMissing && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-805 p-3.5 rounded-xl text-xs space-y-2 leading-relaxed" dir="rtl">
+                <p className="font-black flex items-center text-amber-800">
+                  <AlertTriangle className="h-4 w-4 ml-1.5 text-amber-500 shrink-0" />
+                  تنبيه: جدول مفاتيح الذكاء الاصطناعي غير متوفر في قاعدة البيانات!
+                </p>
+                <p className="font-medium text-[11px] text-amber-700">
+                  تم حفظ المفاتيح محليّاً فقط. لمشاركتها وضمان عملها بشكل دائم في Vercel ومستودع GitHub، يرجى نسخ ولصق الكود التالي في <strong>SQL Editor</strong> داخل لوحة تحكم Supabase الخاصة بك:
+                </p>
+                <pre className="bg-slate-900 text-slate-100 p-2.5 rounded-lg text-[10px] font-mono overflow-x-auto select-all">
+{`CREATE TABLE IF NOT EXISTS public.api_keys (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    key_value TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT false,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);`}
+                </pre>
+              </div>
+            )}
 
             {aiKeys.length === 0 ? (
               <div className="text-center text-xs text-slate-400 py-3 bg-slate-50 rounded-xl border border-dashed border-slate-200">
