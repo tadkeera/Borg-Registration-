@@ -50,19 +50,16 @@ const isVercel = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_VERSI
 // TIMEZONE & DATE UTILITIES (YEMEN UTC+3)
 // -------------------------------------------------------------------------
 function getYemenTime(): Date {
-  const options: Intl.DateTimeFormatOptions = { timeZone: 'Asia/Aden', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false };
-  const parts = new Intl.DateTimeFormat('en-US', options).formatToParts(new Date());
-  let year = 2026, month = 6, day = 20, hour = 0, minute = 0, second = 0;
-  for (const part of parts) {
-    if (part.type === 'year') year = parseInt(part.value, 10);
-    if (part.type === 'month') month = parseInt(part.value, 10);
-    if (part.type === 'day') day = parseInt(part.value, 10);
-    if (part.type === 'hour') hour = parseInt(part.value, 10);
-    if (part.type === 'minute') minute = parseInt(part.value, 10);
-    if (part.type === 'second') second = parseInt(part.value, 10);
-  }
-  if (hour === 24) hour = 0;
-  return new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  const yemenTimeString = new Date().toLocaleString('en-US', { timeZone: 'Asia/Aden' });
+  return new Date(yemenTimeString);
+}
+
+
+function formatLocalYMD(dateObj: Date): string {
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 function getDayNameArabic(dayIndex: number): string {
@@ -85,7 +82,7 @@ function getTargetDate(targetDayOfWeekIndex: number): string {
     // Days to add = 1 (to Sat) + targetDayOfWeekIndex
     const daysToAdd = 1 + targetDayOfWeekIndex;
     const targetDate = new Date(yemenNow.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
-    return targetDate.toISOString().split('T')[0];
+    return formatLocalYMD(targetDate);
   }
 
   let diff = targetDayOfWeekIndex - ourCurrentDay;
@@ -95,7 +92,7 @@ function getTargetDate(targetDayOfWeekIndex: number): string {
   }
   
   const targetDate = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
-  return targetDate.toISOString().split('T')[0];
+  return formatLocalYMD(targetDate);
 }
 
 // -------------------------------------------------------------------------
@@ -148,296 +145,9 @@ function webhookRateLimit(req: express.Request, res: express.Response, next: exp
 // REST API ENDPOINTS
 // -------------------------------------------------------------------------
 
-// --- AI KEYS API ---
-const API_KEYS_PATH = path.join(process.cwd(), 'api_keys.json');
-
-function getApiKeys() {
-  try {
-    if (!fs.existsSync(API_KEYS_PATH)) {
-       return [];
-    }
-    const data = fs.readFileSync(API_KEYS_PATH, 'utf-8');
-    return JSON.parse(data);
-  } catch (err) {
-    console.error('Error reading api keys:', err);
-    return [];
-  }
-}
-
-function saveApiKeys(keys: any[]) {
-  try {
-    fs.writeFileSync(API_KEYS_PATH, JSON.stringify(keys, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error writing api keys:', err);
-  }
-}
-
-function updateEnvFile(activeKey: string, provider = 'gemini') {
-  const envPath = path.join(process.cwd(), '.env');
-  const envKeyName = provider === 'openai' ? 'OPENAI_API_KEY' :
-                     provider === 'anthropic' ? 'ANTHROPIC_API_KEY' :
-                     provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 
-                     'GEMINI_API_KEY';
-  try {
-    if (fs.existsSync(envPath)) {
-      let envContent = fs.readFileSync(envPath, 'utf-8');
-      const regex = new RegExp(`${envKeyName}=.*`);
-      if (envContent.match(regex)) {
-        envContent = envContent.replace(regex, `${envKeyName}="${activeKey}"`);
-      } else {
-        envContent += `\n${envKeyName}="${activeKey}"\n`;
-      }
-      fs.writeFileSync(envPath, envContent, 'utf-8');
-    } else {
-      fs.writeFileSync(envPath, `${envKeyName}="${activeKey}"\n`, 'utf-8');
-    }
-    process.env[envKeyName] = activeKey; // Update locally in current process too
-  } catch (err) {
-    console.error('Error updating .env file:', err);
-  }
-}
-
-async function getApiKeysAsync(): Promise<any[]> {
-  const supabase = getSupabase();
-  try {
-    const { data, error } = await supabase.from('api_keys').select('*').order('created_at', { ascending: true });
-    if (error) {
-      console.warn('Supabase api_keys table error, falling back to local api_keys.json:', error.message);
-      return getApiKeys().map(k => ({ provider: 'gemini', ...k }));
-    }
-    return (data || []).map(k => ({ provider: 'gemini', ...k }));
-  } catch (err: any) {
-    console.warn('Supabase api_keys fetch exception, falling back to local api_keys.json:', err.message);
-    return getApiKeys().map(k => ({ provider: 'gemini', ...k }));
-  }
-}
-
-async function saveApiKeyAsync(newKey: any): Promise<boolean> {
-  const supabase = getSupabase();
-  try {
-    const { error } = await supabase.from('api_keys').insert([newKey]);
-    if (error) {
-      if (error.message.includes('column "provider"') || error.message.includes('provider')) {
-        // Fallback retry without provider field
-        const { provider, ...strippedKey } = newKey;
-        const { error: retryErr } = await supabase.from('api_keys').insert([strippedKey]);
-        if (retryErr) {
-          console.error('Error saving to Supabase api_keys on retry:', retryErr.message);
-          return false;
-        }
-        return true;
-      }
-      console.error('Error saving to Supabase api_keys:', error.message);
-      return false;
-    }
-    return true;
-  } catch (err: any) {
-    console.error('Exception saving to Supabase api_keys:', err.message);
-    return false;
-  }
-}
-
-async function deleteApiKeyAsync(id: string): Promise<boolean> {
-  const supabase = getSupabase();
-  try {
-    const { error } = await supabase.from('api_keys').delete().eq('id', id);
-    if (error) {
-      console.error('Error deleting from Supabase api_keys:', error.message);
-      return false;
-    }
-    return true;
-  } catch (err: any) {
-    console.error('Exception deleting from Supabase api_keys:', err.message);
-    return false;
-  }
-}
-
-app.get('/api/ai-keys', async (req, res) => {
-  const supabase = getSupabase();
-  try {
-    const { data, error } = await supabase.from('api_keys').select('*').order('created_at', { ascending: true });
-    if (error) {
-      // Table doesn't exist, flag it in headers so frontend can show SQL setup instructions
-      res.setHeader('X-Supabase-Table-Missing', 'true');
-      const keys = getApiKeys().map(k => ({ provider: 'gemini', ...k }));
-      return res.json(keys);
-    }
-    const keysMapped = (data || []).map(k => ({ provider: 'gemini', ...k }));
-    return res.json(keysMapped);
-  } catch (err) {
-    res.setHeader('X-Supabase-Table-Missing', 'true');
-    const keys = getApiKeys().map(k => ({ provider: 'gemini', ...k }));
-    return res.json(keys);
-  }
-});
-
-app.post('/api/ai-keys', async (req, res) => {
-  const { name, key_value, provider, base_url, model_name, is_active } = req.body;
-  if (!name || !key_value) return res.status(400).json({ error: 'الاسم والمفتاح مطلوبان' });
-  
-  // Sync locally (fallback)
-  const keys = getApiKeys();
-  const id = crypto.randomUUID();
-  const actualProvider = provider || 'gemini';
-  const newKey = {
-    id,
-    name,
-    key_value,
-    provider: actualProvider,
-    base_url: base_url || '',
-    model_name: model_name || '',
-    is_active: is_active || keys.length === 0,
-    created_at: new Date().toISOString()
-  };
-  
-  if (newKey.is_active) {
-    keys.forEach(k => k.is_active = false);
-  }
-  keys.push(newKey);
-  saveApiKeys(keys);
-
-  if (newKey.is_active) {
-    updateEnvFile(newKey.key_value, actualProvider);
-  }
-
-  // Sync to Database
-  const saved = await saveApiKeyAsync(newKey);
-  if (saved && newKey.is_active) {
-    const supabase = getSupabase();
-    try {
-      await supabase.from('api_keys').update({ is_active: false }).neq('id', id);
-    } catch (_) {}
-  } else if (!saved) {
-    res.setHeader('X-Supabase-Table-Missing', 'true');
-  }
-
-  res.json(newKey);
-});
-
-app.put('/api/ai-keys/:id/active', async (req, res) => {
-  const id = req.params.id;
-  
-  // Sync locally (fallback)
-  const keys = getApiKeys();
-  const keyIndex = keys.findIndex(k => k.id === id);
-  let localActiveProvider = 'gemini';
-  if (keyIndex !== -1) {
-    keys.forEach(k => k.is_active = false);
-    keys[keyIndex].is_active = true;
-    localActiveProvider = keys[keyIndex].provider || 'gemini';
-    saveApiKeys(keys);
-    updateEnvFile(keys[keyIndex].key_value, localActiveProvider);
-  }
-
-  // Sync to Database
-  const supabase = getSupabase();
-  let updatedKeyFromDb = null;
-  try {
-    await supabase.from('api_keys').update({ is_active: false }).neq('id', id);
-    const { data, error } = await supabase.from('api_keys').update({ is_active: true }).eq('id', id).select().maybeSingle();
-    if (error) {
-      res.setHeader('X-Supabase-Table-Missing', 'true');
-    } else {
-      updatedKeyFromDb = data;
-    }
-  } catch (err) {
-    res.setHeader('X-Supabase-Table-Missing', 'true');
-  }
-
-  if (updatedKeyFromDb) {
-    if (updatedKeyFromDb.key_value) {
-      updateEnvFile(updatedKeyFromDb.key_value, updatedKeyFromDb.provider || 'gemini');
-    }
-    return res.json({ provider: 'gemini', ...updatedKeyFromDb });
-  }
-
-  if (keyIndex !== -1) {
-    res.json({ provider: 'gemini', ...keys[keyIndex] });
-  } else {
-    res.status(404).json({ error: 'المفتاح غير موجود' });
-  }
-});
-
-app.put('/api/ai-keys/:id', async (req, res) => {
-  const { name, key_value, provider, base_url, model_name } = req.body;
-  const id = req.params.id;
-  
-  // Sync locally (fallback)
-  const keys = getApiKeys();
-  const keyIndex = keys.findIndex(k => k.id === id);
-  if (keyIndex !== -1) {
-    if (name) keys[keyIndex].name = name;
-    if (key_value) keys[keyIndex].key_value = key_value;
-    if (provider) keys[keyIndex].provider = provider;
-    if (base_url !== undefined) keys[keyIndex].base_url = base_url;
-    if (model_name !== undefined) keys[keyIndex].model_name = model_name;
-    saveApiKeys(keys);
-    if (keys[keyIndex].is_active && key_value) {
-      updateEnvFile(key_value, keys[keyIndex].provider || 'gemini');
-    }
-  }
-
-  // Sync to Database
-  const supabase = getSupabase();
-  let updatedKeyFromDb = null;
-  try {
-    const updates: any = {};
-    if (name) updates.name = name;
-    if (key_value) updates.key_value = key_value;
-    if (provider) updates.provider = provider;
-    if (base_url !== undefined) updates.base_url = base_url;
-    if (model_name !== undefined) updates.model_name = model_name;
-    const { data, error } = await supabase.from('api_keys').update(updates).eq('id', id).select().maybeSingle();
-    if (error) {
-      if (error.message.includes('column "provider"') || error.message.includes('provider')) {
-        delete updates.provider;
-        const { data: retryData, error: retryErr } = await supabase.from('api_keys').update(updates).eq('id', id).select().maybeSingle();
-        if (retryErr) {
-          res.setHeader('X-Supabase-Table-Missing', 'true');
-        } else {
-          updatedKeyFromDb = retryData;
-        }
-      } else {
-        res.setHeader('X-Supabase-Table-Missing', 'true');
-      }
-    } else {
-      updatedKeyFromDb = data;
-    }
-  } catch (err) {
-    res.setHeader('X-Supabase-Table-Missing', 'true');
-  }
-
-  if (updatedKeyFromDb) {
-    if (updatedKeyFromDb.is_active && key_value) {
-      updateEnvFile(key_value, updatedKeyFromDb.provider || 'gemini');
-    }
-    return res.json({ provider: 'gemini', ...updatedKeyFromDb });
-  }
-
-  if (keyIndex !== -1) {
-    res.json({ provider: 'gemini', ...keys[keyIndex] });
-  } else {
-    res.status(404).json({ error: 'المفتاح غير موجود' });
-  }
-});
-
-app.delete('/api/ai-keys/:id', async (req, res) => {
-  const id = req.params.id;
-  
-  // Sync locally (fallback)
-  const keys = getApiKeys();
-  const updatedKeys = keys.filter(k => k.id !== id);
-  saveApiKeys(updatedKeys);
-
-  // Sync to Database
-  await deleteApiKeyAsync(id);
-
-  res.json({ success: true });
-});
-
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', serverTime: getYemenTime().toISOString(), timezone: 'Asia/Aden (UTC+3)' });
+  res.json({ status: 'ok', serverTime: new Date().toISOString(), timezone: 'Asia/Aden (UTC+3)' });
 });
 
 // Supabase configuration verification endpoint
@@ -1186,7 +896,7 @@ app.post('/api/bookings/:id/send-reminder', async (req, res) => {
       phone: cleanPhone,
       direction: 'out',
       message: reminderMessage,
-      timestamp: getYemenTime().toISOString()
+      timestamp: new Date().toISOString()
     }]);
 
     // Record the send in custom reminders list
@@ -1976,7 +1686,7 @@ app.post('/api/cron/reset-weekly', async (req, res) => {
     const reportPayload = {
       totalDeleted: activeBookings.length,
       doctorsCount: activeDoctors.length,
-      generatedAt: getYemenTime().toISOString(),
+      generatedAt: new Date().toISOString(),
       dateStr: yemenTimeStr,
       doctorsList: activeDoctors.map((doc: any) => {
         const docBookings = activeBookings.filter((b: any) => b.doctor_id === doc.id);
@@ -2203,7 +1913,7 @@ app.all('/api/cron/daily-pipeline', async (req, res) => {
               phone: toRemindGrace[i].patient_phone,
               direction: 'out',
               message: graceMessage,
-              timestamp: getYemenTime().toISOString()
+              timestamp: new Date().toISOString()
             }]);
           } catch (_) {}
         }
@@ -2221,7 +1931,7 @@ app.all('/api/cron/daily-pipeline', async (req, res) => {
     // -------------------------------------------------------------------------
     const utcNow = new Date().getTime();
     const yemenTomorrow = new Date(utcNow + (3 * 60 * 60 * 1000) + (24 * 60 * 60 * 1000));
-    const tomorrowStr = yemenTomorrow.toISOString().split('T')[0];
+    const tomorrowStr = formatLocalYMD(yemenTomorrow);
 
     const { data: confirmedTomorrow, error: tomorrowErr } = await supabase
       .from('bookings')
@@ -2268,7 +1978,7 @@ app.all('/api/cron/daily-pipeline', async (req, res) => {
               phone: confirmedTomorrow[i].patient_phone,
               direction: 'out',
               message: getConfirmedText(confirmedTomorrow[i]),
-              timestamp: getYemenTime().toISOString()
+              timestamp: new Date().toISOString()
             }]);
           } catch (_) {}
         }
@@ -2285,7 +1995,7 @@ app.all('/api/cron/daily-pipeline', async (req, res) => {
     res.json({
       success: true,
       message: 'Unified Daily Automation pipeline completed.',
-      timestamp: getYemenTime().toISOString(),
+      timestamp: new Date().toISOString(),
       resultsSummary
     });
 
@@ -2354,7 +2064,7 @@ app.all('/api/cron/weekly-reset', async (req, res) => {
 
     // Save report cache
     const savedReport = {
-      timestamp: getYemenTime().toISOString(),
+      timestamp: new Date().toISOString(),
       stats: {
         totalBookings,
         confirmedCount,
@@ -2675,7 +2385,7 @@ function getNextWeekDate(targetDayOfWeekIndex: number): string {
   const thisWeek = getTargetDate(targetDayOfWeekIndex);
   const date = new Date(thisWeek);
   date.setDate(date.getDate() + 7);
-  return date.toISOString().split('T')[0];
+  return formatLocalYMD(date);
 }
 
 function getCircledNumber(num: number): string {
@@ -2738,7 +2448,7 @@ function getGroupedDatesForDoctor(
       // Adding for "current" week (الأسبوع الحالي)
       const daysToAddCurrent = 1 + s.day_of_week;
       const dateCurrent = new Date(yemenNow.getTime() + daysToAddCurrent * 24 * 60 * 60 * 1000);
-      const dateStr = dateCurrent.toISOString().split('T')[0];
+      const dateStr = formatLocalYMD(dateCurrent);
       if (!isScheduleFullOnDate(s, dateStr)) {
         rawOptions.push({
           day_of_week: s.day_of_week,
@@ -2752,7 +2462,7 @@ function getGroupedDatesForDoctor(
       if (doctor.allow_second_week_booking) {
         const daysToAddNext = 1 + s.day_of_week + 7;
         const dateNext = new Date(yemenNow.getTime() + daysToAddNext * 24 * 60 * 60 * 1000);
-        const dateStrNext = dateNext.toISOString().split('T')[0];
+        const dateStrNext = formatLocalYMD(dateNext);
         if (!isScheduleFullOnDate(s, dateStrNext)) {
           rawOptions.push({
             day_of_week: s.day_of_week,
@@ -2778,7 +2488,7 @@ function getGroupedDatesForDoctor(
         if (!isExpired) {
           // Not expired today, add to current week
           const dateCurrent = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
-          const dateStr = dateCurrent.toISOString().split('T')[0];
+          const dateStr = formatLocalYMD(dateCurrent);
           if (!isScheduleFullOnDate(s, dateStr)) {
             rawOptions.push({
               day_of_week: s.day_of_week,
@@ -2791,7 +2501,7 @@ function getGroupedDatesForDoctor(
       } else if (diff > 0) {
         // Future day this week
         const dateCurrent = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
-        const dateStr = dateCurrent.toISOString().split('T')[0];
+        const dateStr = formatLocalYMD(dateCurrent);
         if (!isScheduleFullOnDate(s, dateStr)) {
           rawOptions.push({
             day_of_week: s.day_of_week,
@@ -2806,7 +2516,7 @@ function getGroupedDatesForDoctor(
       if (doctor.allow_second_week_booking) {
         const diffNext = diff + 7;
         const dateNext = new Date(yemenNow.getTime() + diffNext * 24 * 60 * 60 * 1000);
-        const dateStrNext = dateNext.toISOString().split('T')[0];
+        const dateStrNext = formatLocalYMD(dateNext);
         if (!isScheduleFullOnDate(s, dateStrNext)) {
           rawOptions.push({
             day_of_week: s.day_of_week,
@@ -2889,611 +2599,416 @@ async function handleWhatsappFlow(phone: string, messageObj: any): Promise<strin
     phone: cleanPhone,
     direction: 'in',
     message: isTextMessage ? messageText : `[رسالة وسائط متعددة أو غير مدعومة: ${messageObj.type}]`,
-    timestamp: currentYemenNow.toISOString()
+    timestamp: new Date().toISOString()
   }]);
 
   if (!isTextMessage || !messageText) {
     const errorReply = "عذراً، أستطيع فقط فهم الرسائل النصية المكتوبة بصيغة واضحة.";
     await supabase.from('whatsapp_logs').insert([{
-      phone: cleanPhone, direction: 'out', message: errorReply, timestamp: getYemenTime().toISOString()
+      phone: cleanPhone, direction: 'out', message: errorReply, timestamp: new Date().toISOString()
     }]);
     return errorReply;
   }
 
-  try {
-    // Get active key from api_keys (with Supabase fetch preferred)
-    const keys = await getApiKeysAsync();
-    const activeKeyObj = keys.find(k => k.is_active);
-    const apiKey = activeKeyObj ? activeKeyObj.key_value : process.env.GEMINI_API_KEY;
-    const provider = activeKeyObj ? (activeKeyObj.provider || 'gemini') : 'gemini';
+  // Handle explicit reset
+  const resetCommands = ['مرحبا', 'مرحباً', 'سلام', 'السلام عليكم', 'بداية', 'رجوع', 'الرئيسية', 'تسجيل', 'اهلا', 'أهلا', 'برج الاطباء'];
+  let isReset = resetCommands.includes(messageText.toLowerCase());
 
-    if (!apiKey) {
-      const msg = "نظام الذكاء الاصطناعي معطل حاليا (مفتاح API مفقود). قم بإضافة مفتاح من إعدادات النظام.";
-      await supabase.from('whatsapp_logs').insert([
-        { phone: cleanPhone, direction: 'out', message: msg, timestamp: getYemenTime().toISOString() }
-      ]);
-      return msg;
+  // Fetch session
+  let { data: session } = await supabase.from('bot_sessions').select('*').eq('phone', cleanPhone).maybeSingle();
+
+  const lines = messageText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  let isQuickBooking = false;
+  if (!isReset && lines.length >= 2 && (!session || session.current_state === 'COMPLETED' || session.current_state === 'SELECTING_DOCTOR')) {
+    isQuickBooking = true;
+  }
+
+  if (isQuickBooking) {
+    const patientName = lines[0];
+    const doctorQuery = lines[1].replace(/^(د\.?\s*)/i, '').trim(); // Remove "د. " or "د " prefix
+
+    const { data: doctors } = await supabase.from('doctors').select('*').eq('is_active', true);
+    
+    // Find best matching doctor
+    let bestDoc = null;
+    if (doctors) {
+      for (const d of doctors) {
+        if (d.name.includes(doctorQuery) || doctorQuery.includes(d.name)) {
+          bestDoc = d;
+          break;
+        }
+      }
+      if (!bestDoc) {
+        // Try fallback with just the first name or partial match
+        const queryParts = doctorQuery.split(' ');
+        for (const d of doctors) {
+          if (queryParts.some(p => p.length > 2 && d.name.includes(p))) {
+            bestDoc = d;
+            break;
+          }
+        }
+      }
     }
 
-    // Fetch conversation history from whatsapp_logs
-    const { data: dbLogs } = await supabase
-      .from('whatsapp_logs')
-      .select('message, direction, timestamp')
-      .eq('phone', cleanPhone)
-      .order('timestamp', { ascending: true })
-      .limit(30);
+    if (!bestDoc) {
+      const reply = "عذراً، لم أتمكن من العثور على طبيب بهذا الاسم. يرجى التأكد من اسم الطبيب، أو إرسال *مرحبا* لعرض قائمة الأطباء المتاحين.";
+      await supabase.from('whatsapp_logs').insert([{ phone: cleanPhone, direction: 'out', message: reply, timestamp: new Date().toISOString() }]);
+      return reply;
+    }
 
-    // Filter to exclude the very last log if it corresponds to the current message (avoiding role confusion / duplications)
-    const logs = (dbLogs || []).filter((log, idx) => {
-      if (idx === (dbLogs || []).length - 1 && log.direction === 'in' && log.message === messageText) {
-        return false;
-      }
-      return true;
+    const { data: schedules } = await supabase.from('schedules').select('*').eq('doctor_id', bestDoc.id);
+    const { data: bookings } = await supabase.from('bookings').select('*');
+    
+    const { prompt, options } = getGroupedDatesForDoctor(bestDoc, schedules || [], bookings || []);
+    
+    if (options.length === 0) {
+       const reply = "عذراً، لا توجد مواعيد متاحة حالياً لهذا الطبيب.";
+       await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'COMPLETED', last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+       await supabase.from('whatsapp_logs').insert([{ phone: cleanPhone, direction: 'out', message: reply, timestamp: new Date().toISOString() }]);
+       return reply;
+    } else if (options.length === 1 && options[0].schedules.length === 1) {
+       // Only one day and one shift
+       const opt = options[0];
+       const sch = opt.schedules[0];
+       const shiftLabel = parseInt(sch.start_time.split(':')[0]) < 13 ? 'صباحية' : 'مسائية';
+       const reply = `تم العثور على الطبيب د. ${bestDoc.name}.\nالموعد المتاح الوحيد هو يوم ${getDayNameArabic(opt.day_of_week)} الموافق ${opt.date} للفترة ال${shiftLabel}.\n\nهل أنت موافق على الحجز؟ (أرسل *نعم* للتأكيد)`;
+       
+       await supabase.from('bot_sessions').upsert({
+         phone: cleanPhone,
+         current_state: 'AWAITING_QUICK_CONFIRM',
+         patient_name: patientName,
+         selected_doctor_id: bestDoc.id,
+         selected_schedule_id: sch.id,
+         selected_date: opt.date,
+         selected_shift: parseInt(sch.start_time.split(':')[0]) < 13 ? 'Morning' : 'Evening',
+         last_interaction_at: new Date().toISOString()
+       }, { onConflict: 'phone' });
+       
+       await supabase.from('whatsapp_logs').insert([{ phone: cleanPhone, direction: 'out', message: reply, timestamp: new Date().toISOString() }]);
+       return reply;
+    } else {
+       // Multiple options
+       const reply = `تم العثور على الطبيب د. ${bestDoc.name}.\n` + prompt + `\n\nالاسم المسجل: *${patientName}* (إذا كان خاطئاً، أرسل *مرحبا* للبدء من جديد).`;
+       await supabase.from('bot_sessions').upsert({
+         phone: cleanPhone,
+         current_state: 'SELECTING_DATE',
+         patient_name: patientName,
+         selected_doctor_id: bestDoc.id,
+         session_data: JSON.stringify({ options }),
+         last_interaction_at: new Date().toISOString()
+       }, { onConflict: 'phone' });
+       
+       await supabase.from('whatsapp_logs').insert([{ phone: cleanPhone, direction: 'out', message: reply, timestamp: new Date().toISOString() }]);
+       return reply;
+    }
+  }
+
+  
+  if (!session || isReset) {
+    // Start Greeting
+    const { data: doctors } = await supabase.from('doctors').select('*').eq('is_active', true);
+    let reply = "السلام عليكم ورحمة الله وبركاته، 🌹\nمرحباً بك في خدمة الحجز الآلي لمستشفى برج الأطباء.\n\nيرجى اختيار الطبيب بإرسال الرقم المقابل له:\n";
+    doctors?.forEach((doc, idx) => {
+      reply += `\n*${idx + 1}* - د. ${doc.name} (${doc.specialty})`;
     });
 
-    const systemInstruction = `أنت مساعد ذكي ونشيط لمستشفى برج الأطباء في اليمن. تتحدث باللهجة اليمنية بطلاقة وبشكل طبيعي جداً.
-مهمتك مساعدة المرضى في الاستعلام عن الأطباء وحجز المواعيد.
-تعليمات سير العمل:
-- رحب بالمريض واعرض عليه بكل لطف قائمة الأطباء.
-- استوعب متطلبات المريض من نصه (مثلاً إذا قال "أشتي دكتور باطنية" ابحث فوراً عن أطباء الباطنية باستخدام الأداة getDoctors).
-- لحجز الموعد تأكد أولاً من وجود سعة متاحة في التاريخ والفترة المختارة باستخدام أداة checkCapacity.
-- اطلب الاسم الرباعي ليتم تسجيله بصورة رسمية.
-- عند اجراء الحجز بنجاح (باستخدام makeBooking)، أعطِ المريض رسالة تأكيد متكاملة ومنسقة، ضع رقم الدور في دائرة رمزية مثل ❶ أو ❷...
-- أخبره بصرامة ولطف أن آخر موعد لتسديد الرسوم هو خلال يومين وفقاً لتوقيت اليمن (Asia/Aden).
-- إذا سأل عن أمور خارج المستشفى أو الحجوزات، وجهه بسلاسة واعتذار سريع للعودة للموضوع الطبي.`;
-
-    const getDbDayOfWeek = (dateStr: string): number | null => {
-      try {
-        const date = new Date(dateStr);
-        if (isNaN(date.getTime())) return null;
-        const jsDay = date.getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
-        if (jsDay === 6) return 0; // Saturday
-        if (jsDay === 0) return 1; // Sunday
-        if (jsDay === 1) return 2; // Monday
-        if (jsDay === 2) return 3; // Tuesday
-        if (jsDay === 3) return 4; // Wednesday
-        if (jsDay === 4) return 5; // Thursday
-        return null; // Friday (day off)
-      } catch (_) {
-        return null;
-      }
-    };
-
-    // Initialize Database tools
-    const getDoctors = async () => {
-      const { data: doctors, error: dError } = await supabase.from('doctors').select('id, name, specialty').eq('is_active', true);
-      if (dError) return { error: dError.message };
-
-      const { data: schedules, error: sError } = await supabase.from('schedules').select('*');
-      
-      const doctorsWithSchedules = (doctors || []).map(doc => {
-        const docSchedules = (schedules || []).filter((s: any) => s.doctor_id === doc.id).map((s: any) => {
-          const daysAr = ['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
-          return {
-            dayName: daysAr[s.day_of_week] || 'غير محدد',
-            dayIndex: s.day_of_week,
-            startTime: s.start_time,
-            endTime: s.end_time,
-            maxCapacity: s.max_capacity,
-            availableCapacity: s.available_capacity
-          };
-        });
-        return {
-          id: doc.id,
-          name: doc.name,
-          specialty: doc.specialty,
-          schedules: docSchedules
-        };
-      });
-
-      return { doctors: doctorsWithSchedules };
-    };
-
-    const checkCapacity = async (args: any) => {
-      const { doctorId, dateStr } = args;
-      const dbDay = getDbDayOfWeek(dateStr);
-      if (dbDay === null) {
-        return { error: 'يوم الجمعة إجازة رسمية لجميع الأطباء في مستشفى برج الأطباء.' };
-      }
-
-      const { data: schedule, error: schError } = await supabase
-        .from('schedules')
-        .select('id, max_capacity, start_time, end_time')
-        .eq('doctor_id', doctorId)
-        .eq('day_of_week', dbDay)
-        .maybeSingle();
-
-      if (schError || !schedule) {
-        return { error: 'عذراً، الطبيب المختار لا يعمل أو غير متواجد في هذا اليوم المحدد.' };
-      }
-
-      const { count, error: countError } = await supabase
-        .from('bookings')
-        .select('id', { count: 'exact', head: true })
-        .eq('schedule_id', schedule.id)
-        .eq('booking_date', dateStr)
-        .neq('status', 'cancelled');
-
-      if (countError) return { error: countError.message };
-
-      const currentCount = count || 0;
-      const remainingSlots = schedule.max_capacity - currentCount;
-      return { 
-        hasCapacity: remainingSlots > 0, 
-        maxCapacity: schedule.max_capacity,
-        bookedCount: currentCount,
-        remainingSlots: Math.max(0, remainingSlots),
-        workHours: `${schedule.start_time} - ${schedule.end_time}`
-      };
-    };
-
-    const makeBooking = async (args: any) => {
-      const { name, doctorId, dateStr, shift, customerPhone } = args;
-      const dbDay = getDbDayOfWeek(dateStr);
-      if (dbDay === null) {
-        return { error: 'يوم الجمعة إجازة رسمية لجميع الأطباء ولا تتوفر حجوزات فيه.' };
-      }
-
-      const { data: schedule, error: schError } = await supabase
-        .from('schedules')
-        .select('id, max_capacity')
-        .eq('doctor_id', doctorId)
-        .eq('day_of_week', dbDay)
-        .maybeSingle();
-
-      if (schError || !schedule) {
-        return { error: 'لا يوجد دكتور متواجد في هذا اليوم المختار.' };
-      }
-
-      const { count, error: countError } = await supabase
-        .from('bookings')
-        .select('id', { count: 'exact', head: true })
-        .eq('schedule_id', schedule.id)
-        .eq('booking_date', dateStr)
-        .neq('status', 'cancelled');
-
-      if (countError) return { error: countError.message };
-
-      const currentCount = count || 0;
-      if (currentCount >= schedule.max_capacity) {
-        return { error: 'عذراً، لا تتوفر سعة متبقية لدى هذا الطبيب في هذا اليوم وعليك تغييره.' };
-      }
-
-      const queueNumber = currentCount + 1;
-
-      const { data, error } = await supabase
-        .from('bookings')
-        .insert([{
-          doctor_id: doctorId,
-          patient_name: name,
-          patient_phone: normalizePhone(customerPhone || phone),
-          schedule_id: schedule.id,
-          booking_date: dateStr,
-          queue_number: queueNumber,
-          status: 'confirmed',
-          payment_status: 'pending',
-          shift: shift || 'Morning'
-        }])
-        .select()
-        .single();
-
-      if (error) return { error: error.message };
-      
-      // Update session state
-      await supabase.from('bot_sessions').upsert({
-         phone: cleanPhone,
-         current_state: 'COMPLETED',
-         patient_name: name,
-         selected_doctor_id: doctorId,
-         selected_schedule_id: schedule.id,
-         selected_date: dateStr,
-         selected_shift: shift || 'Morning',
-         last_interaction_at: getYemenTime().toISOString()
-      }, { onConflict: 'phone' });
-
-      return { success: true, booking: data, queueNumber };
-    };
-
-    const toolsMap: Record<string, Function> = { getDoctors, checkCapacity, makeBooking };
-
-    let finalAnswer = "";
-    try {
-      if (provider === 'gemini') {
-      const { GoogleGenAI, Type } = await import('@google/genai');
-      const ai = new GoogleGenAI({ apiKey });
-
-      const history = (logs || []).map(log => ({
-        role: log.direction === 'in' ? 'user' : 'model',
-        parts: [{ text: log.message }]
-      }));
-      
-      // Ensure history starts with 'user'
-      let validHistory = [];
-      for (let i = 0; i < history.length; i++) {
-         if (history[i].role === 'user') {
-            validHistory = history.slice(i);
-            break;
-         }
-      }
-      // Remove the current message from history to prevent duplication
-      if (validHistory.length > 0 && validHistory[validHistory.length - 1].parts[0].text === messageText) {
-         validHistory.pop();
-      }
-
-      const chat = ai.chats.create({
-        model: activeKeyObj?.model_name || 'gemini-3.5-flash',
-        history: validHistory,
-        config: {
-          systemInstruction,
-          temperature: 0.7,
-          // @ts-ignore
-          tools: [{
-            functionDeclarations: [
-              {
-                name: 'getDoctors',
-                description: 'Fetch list of available doctors and their specialties to show to the patient.'
-              },
-              {
-                name: 'checkCapacity',
-                description: 'Check if a specific doctor has available slots on a given date and shift.',
-                parameters: {
-                  type: Type.OBJECT,
-                  properties: {
-                    doctorId: { type: Type.STRING, description: 'ID of the doctor (UUID)' },
-                    dateStr: { type: Type.STRING, description: 'Date string formatted as YYYY-MM-DD' },
-                    shift: { type: Type.STRING, description: 'Shift name exactly as "صباحية" or "مسائية"' }
-                  },
-                  required: ['doctorId', 'dateStr', 'shift']
-                }
-              },
-              {
-                name: 'makeBooking',
-                description: 'Book an appointment for a patient in the database. Call THIS when patient confirms name and slot.',
-                parameters: {
-                  type: Type.OBJECT,
-                  properties: {
-                    name: { type: Type.STRING, description: 'Full quadruple patient name in Arabic' },
-                    doctorId: { type: Type.STRING, description: 'Doctor UUID' },
-                    dateStr: { type: Type.STRING, description: 'Date in YYYY-MM-DD format' },
-                    shift: { type: Type.STRING, description: 'Shift ("صباحية" / "مسائية")' },
-                    customerPhone: { type: Type.STRING, description: 'Patient phone number' }
-                  },
-                  required: ['name', 'doctorId', 'dateStr', 'shift', 'customerPhone']
-                }
-              }
-            ]
-          }]
-        }
-      });
-
-      let response = await chat.sendMessage({ message: messageText });
-      finalAnswer = response.text || '';
-
-      // Handle Function Calling recursively
-      if (response.functionCalls && response.functionCalls.length > 0) {
-        let maxLoops = 3;
-        while(response.functionCalls && response.functionCalls.length > 0 && maxLoops > 0) {
-           const call = response.functionCalls[0];
-           if (call.name && toolsMap[call.name]) {
-              const toolResult = await toolsMap[call.name](call.args);
-              
-              response = await chat.sendMessage({
-                  // @ts-ignore
-                  message: [{
-                    functionResponse: {
-                       name: call.name,
-                       response: toolResult
-                    }
-                  }]
-              });
-              finalAnswer = response.text || finalAnswer;
-           } else {
-              break;
-           }
-           maxLoops--;
-        }
-      }
-    } else if (provider === 'openai' || provider === 'deepseek' || provider === 'custom') {
-      let endpoint = activeKeyObj?.base_url || 'https://api.openai.com/v1/chat/completions';
-      if (endpoint && !endpoint.endsWith('/chat/completions')) {
-         endpoint = endpoint.endsWith('/') ? `${endpoint}chat/completions` : `${endpoint}/chat/completions`;
-      }
-      let model = activeKeyObj?.model_name || 'gpt-4o-mini';
-      let headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      };
-
-      if (provider === 'deepseek') {
-        endpoint = activeKeyObj?.base_url || 'https://api.deepseek.com/chat/completions';
-        if (endpoint && !endpoint.endsWith('/chat/completions')) {
-           endpoint = endpoint.endsWith('/') ? `${endpoint}chat/completions` : `${endpoint}/chat/completions`;
-        }
-        model = activeKeyObj?.model_name || 'deepseek-chat';
-      } else if (provider === 'openai') {
-        endpoint = activeKeyObj?.base_url || 'https://api.openai.com/v1/chat/completions';
-        if (endpoint && !endpoint.endsWith('/chat/completions')) {
-           endpoint = endpoint.endsWith('/') ? `${endpoint}chat/completions` : `${endpoint}/chat/completions`;
-        }
-        model = activeKeyObj?.model_name || 'gpt-4o-mini';
-      }
-
-      const openaiMessages: any[] = [
-        { role: 'system', content: systemInstruction },
-        ...(logs || []).map(log => ({
-          role: log.direction === 'in' ? 'user' : 'assistant',
-          content: log.message
-        }))
-      ];
-      if (openaiMessages.length === 0 || openaiMessages[openaiMessages.length - 1].content !== messageText) {
-        openaiMessages.push({ role: 'user', content: messageText });
-      }
-
-      const openaiTools = [
-        {
-          type: 'function',
-          function: {
-            name: 'getDoctors',
-            description: 'Fetch list of available doctors and their specialties to show to the patient.'
-          }
-        },
-        {
-          type: 'function',
-          function: {
-            name: 'checkCapacity',
-            description: 'Check if a specific doctor has available slots on a given date and shift.',
-            parameters: {
-              type: 'object',
-              properties: {
-                doctorId: { type: 'string', description: 'ID of the doctor (UUID)' },
-                dateStr: { type: 'string', description: 'Date string formatted as YYYY-MM-DD' },
-                shift: { type: 'string', description: 'Shift name exactly as "صباحية" or "مسائية"' }
-              },
-              required: ['doctorId', 'dateStr', 'shift']
-            }
-          }
-        },
-        {
-          type: 'function',
-          function: {
-            name: 'makeBooking',
-            description: 'Book an appointment for a patient in the database. Call THIS when patient confirms name and slot.',
-            parameters: {
-              type: 'object',
-              properties: {
-                name: { type: 'string', description: 'Full quadruple patient name in Arabic' },
-                doctorId: { type: 'string', description: 'Doctor UUID' },
-                dateStr: { type: 'string', description: 'Date in YYYY-MM-DD format' },
-                shift: { type: 'string', description: 'Shift ("صباحية" / "مسائية")' },
-                customerPhone: { type: 'string', description: 'Patient phone number' }
-              },
-              required: ['name', 'doctorId', 'dateStr', 'shift', 'customerPhone']
-            }
-          }
-        }
-      ];
-
-      let maxLoops = 4;
-      while (maxLoops > 0) {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            model,
-            messages: openaiMessages,
-            tools: openaiTools,
-            tool_choice: 'auto'
-          })
-        });
-
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(`API Error (${response.status}): ${errText}`);
-        }
-
-        const data: any = await response.json();
-        const choice = data.choices?.[0];
-        const message = choice?.message;
-
-        if (!message) {
-          throw new Error("Empty response from AI Provider API");
-        }
-
-        openaiMessages.push(message);
-
-        if (message.content) {
-          finalAnswer = message.content;
-        }
-
-        if (message.tool_calls && message.tool_calls.length > 0) {
-          for (const toolCall of message.tool_calls) {
-            const func = toolCall.function;
-            const args = JSON.parse(func.arguments || '{}');
-            const toolResult = await toolsMap[func.name](args);
-
-            openaiMessages.push({
-              role: 'tool',
-              tool_call_id: toolCall.id,
-              name: func.name,
-              content: JSON.stringify(toolResult)
-            });
-          }
-          maxLoops--;
-        } else {
-          break;
-        }
-      }
-    } else if (provider === 'anthropic') {
-      let endpoint = activeKeyObj?.base_url || 'https://api.anthropic.com/v1/messages';
-      let model = activeKeyObj?.model_name || 'claude-3-5-sonnet-20241022';
-      let headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      };
-
-      const base_messages = (logs || []).map(log => ({
-        role: log.direction === 'in' ? 'user' : 'assistant',
-        content: log.message
-      }));
-      
-      let validAnthropicMsgs = [];
-      for (let i = 0; i < base_messages.length; i++) {
-        if (base_messages[i].role === 'user') {
-          validAnthropicMsgs = base_messages.slice(i);
-          break;
-        }
-      }
-      
-      let r_messages: any[] = [];
-      let nextRole = 'user';
-      for (const msg of validAnthropicMsgs) {
-         if (msg.role === nextRole && msg.content && msg.content.trim()) {
-            r_messages.push({ role: msg.role, content: msg.content.trim() });
-            nextRole = nextRole === 'user' ? 'assistant' : 'user';
-         }
-      }
-      if (r_messages.length === 0 || r_messages[r_messages.length - 1].role !== 'user') {
-         if (r_messages.length > 0 && r_messages[r_messages.length - 1].role === 'assistant') {
-            r_messages.push({ role: 'user', content: messageText });
-         } else {
-            r_messages = [{ role: 'user', content: messageText }];
-         }
-      } else {
-         r_messages.push({ role: 'assistant', content: "مرحباً بك. كيف يمكنني مساعدتك؟" });
-         r_messages.push({ role: 'user', content: messageText });
-      }
-
-      const claudeTools = [
-        {
-          name: 'getDoctors',
-          description: 'Fetch list of available doctors and their specialties to show to the patient.',
-          input_schema: { type: 'object', properties: {} }
-        },
-        {
-          name: 'checkCapacity',
-          description: 'Check if a specific doctor has available slots on a given date and shift.',
-          input_schema: {
-            type: 'object',
-            properties: {
-              doctorId: { type: 'string', description: 'ID of the doctor (UUID)' },
-              dateStr: { type: 'string', description: 'Date string formatted as YYYY-MM-DD' },
-              shift: { type: 'string', description: 'Shift name exactly as "صباحية" or "مسائية"' }
-            },
-            required: ['doctorId', 'dateStr', 'shift']
-          }
-        },
-        {
-          name: 'makeBooking',
-          description: 'Book an appointment for a patient in the database. Call THIS when patient confirms name and slot.',
-          input_schema: {
-            type: 'object',
-            properties: {
-              name: { type: 'string', description: 'Full quadruple patient name in Arabic' },
-              doctorId: { type: 'string', description: 'Doctor UUID' },
-              dateStr: { type: 'string', description: 'Date in YYYY-MM-DD format' },
-              shift: { type: 'string', description: 'Shift ("صباحية" / "مسائية")' },
-              customerPhone: { type: 'string', description: 'Patient phone number' }
-            },
-            required: ['name', 'doctorId', 'dateStr', 'shift', 'customerPhone']
-          }
-        }
-      ];
-
-      let maxLoops = 4;
-      while (maxLoops > 0) {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            model,
-            system: systemInstruction,
-            max_tokens: 1548,
-            messages: r_messages,
-            tools: claudeTools
-          })
-        });
-
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(`Anthropic API Error (Status ${response.status}): ${errText}`);
-        }
-
-        const data: any = await response.json();
-        const assistantContent = data.content || [];
-        r_messages.push({ role: 'assistant', content: assistantContent });
-
-        const textBlock = assistantContent.find((b: any) => b.type === 'text');
-        if (textBlock && textBlock.text) {
-          finalAnswer = textBlock.text;
-        }
-
-        const toolUseBlocks = assistantContent.filter((b: any) => b.type === 'tool_use');
-        if (toolUseBlocks && toolUseBlocks.length > 0) {
-          const toolResultsContent = [];
-          for (const block of toolUseBlocks) {
-            const toolResult = await toolsMap[block.name](block.input || {});
-            toolResultsContent.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify(toolResult)
-            });
-          }
-          r_messages.push({
-            role: 'user',
-            content: toolResultsContent
-          });
-          maxLoops--;
-        } else {
-          break;
-        }
-      }
-    }
-  } catch (err: any) {
-    if (err.message && (err.message.includes("API Key") || err.message.includes("API key") || err.message.includes("key_invalid") || err.message.includes("401"))) {
-      console.warn("AI API Key is invalid. The user must update it in Settings.");
-      finalAnswer = "عذراً، مفتاح الذكاء الاصطناعي الخاص بالنموذج المحدد غير صالح أو غير مرتبط بالخدمة بطريقة صحيحة. يرجى مراجعة وتحديث المفتاح الخاص بك من إعدادات النظام (Settings > API Keys).";
-    } else {
-      console.error("AI Error:", err.message);
-      finalAnswer = "عذرا، النظام يواجه صعوبة مؤقتة في معالجة طلبك المعقد عبر مزود الخدمة المختار. الرجاء المحاولة لاحقا.";
-    }
-  }
-
-    if (!finalAnswer) {
-      finalAnswer = "عذرا، لم أتمكن من الرد. يرجى المحاولة مرة أخرى.";
-    }
-
-    // Update bot session with last interaction so it shows active
     await supabase.from('bot_sessions').upsert({
       phone: cleanPhone,
-      current_state: 'CHATTING_WITH_AI',
-      last_interaction_at: getYemenTime().toISOString()
+      current_state: 'SELECTING_DOCTOR',
+      last_interaction_at: new Date().toISOString()
     }, { onConflict: 'phone' });
+    
+    await supabase.from('whatsapp_logs').insert([{
+      phone: cleanPhone, direction: 'out', message: reply, timestamp: new Date().toISOString()
+    }]);
+    return reply;
+  }
 
-    // Ensure session isn't empty on frontend
-    const { data: sessionData } = await supabase.from('bot_sessions').select('*').eq('phone', cleanPhone).single();
-    if (!sessionData) {
-      await supabase.from('bot_sessions').insert([{ phone: cleanPhone, current_state: 'CHATTING_WITH_AI', last_interaction_at: getYemenTime().toISOString() }]);
+  const currentState = session.current_state;
+  let reply = "";
+
+  if (currentState === 'SELECTING_DOCTOR') {
+    const { data: doctors } = await supabase.from('doctors').select('*').eq('is_active', true);
+    const selectedIdx = parseInt(messageText) - 1;
+    
+    if (isNaN(selectedIdx) || !doctors || selectedIdx < 0 || selectedIdx >= doctors.length) {
+      reply = "عذراً، اختيار غير صحيح. يرجى كتابة رقم الطبيب فقط من القائمة السابقة.";
+    } else {
+      const selectedDoc = doctors[selectedIdx];
+      const { data: schedules } = await supabase.from('schedules').select('*').eq('doctor_id', selectedDoc.id);
+      const { data: bookings } = await supabase.from('bookings').select('*');
+      
+      const { prompt, options } = getGroupedDatesForDoctor(selectedDoc, schedules || [], bookings || []);
+      
+      if (options.length === 0) {
+         reply = prompt;
+         // Reset state since no options
+         await supabase.from('bot_sessions').upsert({
+           phone: cleanPhone,
+           current_state: 'SELECTING_DOCTOR',
+           last_interaction_at: new Date().toISOString()
+         }, { onConflict: 'phone' });
+      } else {
+         reply = prompt;
+         await supabase.from('bot_sessions').upsert({
+           phone: cleanPhone,
+           current_state: 'SELECTING_DATE',
+           selected_doctor_id: selectedDoc.id,
+           session_data: JSON.stringify({ options }),
+           last_interaction_at: new Date().toISOString()
+         }, { onConflict: 'phone' });
+      }
+    }
+  } else if (currentState === 'SELECTING_DATE') {
+    const sessionData = session.session_data ? JSON.parse(session.session_data) : { options: [] };
+    const options = sessionData.options;
+    const selectedIdx = parseInt(messageText) - 1;
+    
+    if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= options.length) {
+      reply = "عذراً، اختيار غير صحيح. يرجى كتابة الرقم المقابل للموعد المطلوب فقط.";
+    } else {
+      const selectedOption = options[selectedIdx];
+      const schedules = selectedOption.schedules;
+      
+      if (schedules.length > 1) {
+         // Multiple shifts
+         reply = `لقد اخترت يوم ${getDayNameArabic(selectedOption.day_of_week)} (${selectedOption.date}).\nيرجى اختيار الفترة الزمنية:\n`;
+         schedules.forEach((sch: any, idx: number) => {
+           const startHour = parseInt(sch.start_time.split(':')[0]);
+           const shiftLabel = startHour < 13 ? 'صباحية' : 'مسائية';
+           reply += `\n*${idx + 1}* - فترة ${shiftLabel} (تبدأ ${sch.start_time})`;
+         });
+         
+         await supabase.from('bot_sessions').upsert({
+           phone: cleanPhone,
+           current_state: 'SELECTING_SHIFT',
+           session_data: JSON.stringify({ selectedOption, schedules }),
+           last_interaction_at: new Date().toISOString()
+         }, { onConflict: 'phone' });
+      } else {
+         // Single shift
+         const sch = schedules[0];
+         if (session.patient_name) {
+            await supabase.from('bot_sessions').upsert({
+              phone: cleanPhone,
+              current_state: 'AWAITING_QUICK_CONFIRM',
+              selected_schedule_id: sch.id,
+              selected_date: selectedOption.date,
+              selected_shift: parseInt(sch.start_time.split(':')[0]) < 13 ? 'Morning' : 'Evening',
+              last_interaction_at: new Date().toISOString()
+            }, { onConflict: 'phone' });
+            reply = `ممتاز، تم اختيار الموعد.\n\nهل أنت موافق على الحجز باسم *${session.patient_name}*؟ (أرسل *نعم* للتأكيد)`;
+         } else {
+            await supabase.from('bot_sessions').upsert({
+              phone: cleanPhone,
+              current_state: 'AWAITING_NAME',
+              selected_schedule_id: sch.id,
+              selected_date: selectedOption.date,
+              selected_shift: parseInt(sch.start_time.split(':')[0]) < 13 ? 'Morning' : 'Evening',
+              last_interaction_at: new Date().toISOString()
+            }, { onConflict: 'phone' });
+            
+            reply = "ممتاز، تم اختيار الموعد.\n\nيرجى الآن كتابة *الاسم الرباعي* للمريض لتأكيد الحجز:";
+         }
+      }
+    }
+  } else if (currentState === 'SELECTING_SHIFT') {
+    const sessionData = session.session_data ? JSON.parse(session.session_data) : { schedules: [] };
+    const schedules = sessionData.schedules;
+    const selectedOption = sessionData.selectedOption;
+    const selectedIdx = parseInt(messageText) - 1;
+
+    if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= schedules.length) {
+      reply = "عذراً، اختيار غير صحيح. يرجى كتابة رقم الفترة المطلوبة فقط.";
+    } else {
+      const sch = schedules[selectedIdx];
+      if (session.patient_name) {
+          await supabase.from('bot_sessions').upsert({
+            phone: cleanPhone,
+            current_state: 'AWAITING_QUICK_CONFIRM',
+            selected_schedule_id: sch.id,
+            selected_date: selectedOption.date,
+            selected_shift: parseInt(sch.start_time.split(':')[0]) < 13 ? 'Morning' : 'Evening',
+            last_interaction_at: new Date().toISOString()
+          }, { onConflict: 'phone' });
+          reply = `ممتاز، تم اختيار الموعد.\n\nهل أنت موافق على الحجز باسم *${session.patient_name}*؟ (أرسل *نعم* للتأكيد)`;
+      } else {
+          await supabase.from('bot_sessions').upsert({
+            phone: cleanPhone,
+            current_state: 'AWAITING_NAME',
+            selected_schedule_id: sch.id,
+            selected_date: selectedOption.date,
+            selected_shift: parseInt(sch.start_time.split(':')[0]) < 13 ? 'Morning' : 'Evening',
+            last_interaction_at: new Date().toISOString()
+          }, { onConflict: 'phone' });
+          
+          reply = "ممتاز، تم اختيار الموعد.\n\nيرجى الآن كتابة *الاسم الرباعي* للمريض لتأكيد الحجز:";
+      }
+    }
+  } else if (currentState === 'AWAITING_NAME') {
+    const patientName = messageText;
+    const doctorId = session.selected_doctor_id;
+    const scheduleId = session.selected_schedule_id;
+    const dateStr = session.selected_date;
+    const shift = session.selected_shift;
+
+    const { data: countData } = await supabase
+        .from('bookings')
+        .select('id', { count: 'exact', head: true })
+        .eq('schedule_id', scheduleId)
+        .eq('booking_date', dateStr)
+        .neq('status', 'cancelled')
+        .neq('payment_status', 'cancelled');
+        
+    const queueNumber = (countData?.count || 0) + 1;
+
+    // Check duplicate
+    const { data: existingDup } = await supabase
+      .from('bookings')
+      .select('id')
+      .eq('patient_phone', cleanPhone)
+      .eq('booking_date', dateStr)
+      .neq('status', 'cancelled')
+      .maybeSingle();
+
+    if (existingDup) {
+       reply = "عذراً، لديك حجز مسبق في نفس هذا اليوم.";
+       await supabase.from('bot_sessions').upsert({
+          phone: cleanPhone,
+          current_state: 'SELECTING_DOCTOR',
+          last_interaction_at: new Date().toISOString()
+       }, { onConflict: 'phone' });
+    } else {
+       const { data: booking, error: bError } = await supabase.from('bookings').insert([{
+         patient_name: patientName,
+         patient_phone: cleanPhone,
+         schedule_id: scheduleId,
+         doctor_id: doctorId,
+         booking_date: dateStr,
+         queue_number: queueNumber,
+         status: 'confirmed',
+         payment_status: 'pending',
+         verified_by_whatsapp: true,
+         shift: shift
+       }]).select('*, doctor:doctors(name)').single();
+
+       if (bError) {
+         reply = "عذراً، حدث خطأ أثناء الحجز (ربما يكون قد اكتمل العدد المتاح). يرجى المحاولة لاحقاً.";
+         await supabase.from('bot_sessions').upsert({
+           phone: cleanPhone,
+           current_state: 'SELECTING_DOCTOR',
+           last_interaction_at: new Date().toISOString()
+         }, { onConflict: 'phone' });
+       } else {
+         const doctorName = booking?.doctor?.name || '';
+         reply = `تم تأكيد حجزك بنجاح! 🌹\n\n` +
+           `👤 المريض: *${patientName}*\n` +
+           `👨‍⚕️ الطبيب: *د. ${doctorName}*\n` +
+           `📅 التاريخ: *${dateStr}*\n` +
+           `⏰ الفترة: *${shift === 'Morning' ? 'صباحية' : 'مسائية'}*\n` +
+           `🔢 رقم الدور: *${getCircledNumber(queueNumber)}*\n\n` +
+           `يرجى الحضور وتسديد الرسوم في العيادة. \nشكراً لاختياركم مستشفى برج الأطباء.`;
+         
+         await supabase.from('bot_sessions').upsert({
+           phone: cleanPhone,
+           current_state: 'COMPLETED',
+           patient_name: patientName,
+           last_interaction_at: new Date().toISOString()
+         }, { onConflict: 'phone' });
+       }
+    }
+  
+  } else if (currentState === 'AWAITING_QUICK_CONFIRM') {
+    if (messageText.trim().toLowerCase() === 'نعم' || messageText.trim() === 'موافق') {
+      const patientName = session.patient_name;
+      const doctorId = session.selected_doctor_id;
+      const scheduleId = session.selected_schedule_id;
+      const dateStr = session.selected_date;
+      const shift = session.selected_shift;
+
+      const { data: countData } = await supabase
+          .from('bookings')
+          .select('id', { count: 'exact', head: true })
+          .eq('schedule_id', scheduleId)
+          .eq('booking_date', dateStr)
+          .neq('status', 'cancelled')
+          .neq('payment_status', 'cancelled');
+          
+      const queueNumber = (countData?.count || 0) + 1;
+
+      // Check duplicate
+      const { data: existingDup } = await supabase
+        .from('bookings')
+        .select('id')
+        .eq('patient_phone', cleanPhone)
+        .eq('booking_date', dateStr)
+        .neq('status', 'cancelled')
+        .maybeSingle();
+
+      if (existingDup) {
+         reply = "عذراً، لديك حجز مسبق في نفس هذا اليوم.";
+         await supabase.from('bot_sessions').upsert({
+            phone: cleanPhone,
+            current_state: 'COMPLETED',
+            last_interaction_at: new Date().toISOString()
+         }, { onConflict: 'phone' });
+      } else {
+         const { data: booking, error: bError } = await supabase.from('bookings').insert([{
+           patient_name: patientName,
+           patient_phone: cleanPhone,
+           schedule_id: scheduleId,
+           doctor_id: doctorId,
+           booking_date: dateStr,
+           queue_number: queueNumber,
+           status: 'confirmed',
+           payment_status: 'pending',
+           verified_by_whatsapp: true,
+           shift: shift
+         }]).select('*, doctor:doctors(name)').single();
+
+         if (bError) {
+           reply = "عذراً، حدث خطأ أثناء الحجز (ربما يكون قد اكتمل العدد المتاح). يرجى المحاولة لاحقاً.";
+           await supabase.from('bot_sessions').upsert({
+             phone: cleanPhone,
+             current_state: 'COMPLETED',
+             last_interaction_at: new Date().toISOString()
+           }, { onConflict: 'phone' });
+         } else {
+           const doctorName = booking?.doctor?.name || '';
+           reply = `تم تأكيد حجزك بنجاح! 🌹\n\n` +
+             `👤 المريض: *${patientName}*\n` +
+             `👨‍⚕️ الطبيب: *د. ${doctorName}*\n` +
+             `📅 التاريخ: *${dateStr}*\n` +
+             `⏰ الفترة: *${shift === 'Morning' ? 'صباحية' : 'مسائية'}*\n` +
+             `🔢 رقم الدور: *${getCircledNumber(queueNumber)}*\n\n` +
+             `يرجى الحضور وتسديد الرسوم في العيادة. \nشكراً لاختياركم مستشفى برج الأطباء.`;
+           
+           await supabase.from('bot_sessions').upsert({
+             phone: cleanPhone,
+             current_state: 'COMPLETED',
+             last_interaction_at: new Date().toISOString()
+           }, { onConflict: 'phone' });
+         }
+      }
+    } else {
+      reply = "تم إلغاء الحجز السريع. أرسل *مرحبا* للبدء من جديد.";
+      await supabase.from('bot_sessions').upsert({
+        phone: cleanPhone,
+        current_state: 'COMPLETED',
+        last_interaction_at: new Date().toISOString()
+      }, { onConflict: 'phone' });
     }
 
-    // Save outbound message to logs
-    await supabase.from('whatsapp_logs').insert([{
-      phone: cleanPhone,
-      direction: 'out',
-      message: finalAnswer,
-      timestamp: getYemenTime().toISOString()
-    }]);
-
-    return finalAnswer;
-
-  } catch (err: any) {
-    console.error('Gemini Whatsapp Flow error:', err.message);
-    const fallbackMessage = "عذراً، حدث خطأ داخلي في نظام الذكاء الاصطناعي.";
-    await supabase.from('whatsapp_logs').insert([
-      { phone: cleanPhone, direction: 'out', message: fallbackMessage, timestamp: getYemenTime().toISOString() }
-    ]);
-    return fallbackMessage;
+  } else {
+    // Completed or unknown
+    reply = "لقد قمت بإتمام الحجز مسبقاً. إذا أردت البدء من جديد، أرسل كلمة *مرحبا*.";
   }
+
+  await supabase.from('whatsapp_logs').insert([{
+    phone: cleanPhone, direction: 'out', message: reply, timestamp: new Date().toISOString()
+  }]);
+
+  return reply;
 }
 
 

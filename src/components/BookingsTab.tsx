@@ -9,19 +9,8 @@ import { Search, Filter, Printer, CalendarClock, UserCheck, ShieldAlert, CircleA
 import { HOSPITAL_LOGO } from '../utils/constants';
 
 function getYemenTime(): Date {
-  const options: Intl.DateTimeFormatOptions = { timeZone: 'Asia/Aden', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false };
-  const parts = new Intl.DateTimeFormat('en-US', options).formatToParts(new Date());
-  let year = 2026, month = 6, day = 20, hour = 0, minute = 0, second = 0;
-  for (const part of parts) {
-    if (part.type === 'year') year = parseInt(part.value, 10);
-    if (part.type === 'month') month = parseInt(part.value, 10);
-    if (part.type === 'day') day = parseInt(part.value, 10);
-    if (part.type === 'hour') hour = parseInt(part.value, 10);
-    if (part.type === 'minute') minute = parseInt(part.value, 10);
-    if (part.type === 'second') second = parseInt(part.value, 10);
-  }
-  if (hour === 24) hour = 0;
-  return new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  const yemenTimeString = new Date().toLocaleString('en-US', { timeZone: 'Asia/Aden' });
+  return new Date(yemenTimeString);
 }
 
 function formatDateToArabicNumerals(dateStr: string): string {
@@ -59,7 +48,8 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
   const [filterDate, setFilterDate] = useState<string>(''); // Default empty string means NO filter, uses actual today
   const [filterDoctorId, setFilterDoctorId] = useState<string>('all');
 
-  const actualTodayDate = getYemenTime().toISOString().split('T')[0];
+  const yemenNowInstance = getYemenTime();
+  const actualTodayDate = `${yemenNowInstance.getFullYear()}-${String(yemenNowInstance.getMonth() + 1).padStart(2, '0')}-${String(yemenNowInstance.getDate()).padStart(2, '0')}`;
   const effectiveDate = filterDate || actualTodayDate;
 
   // Filters for selected scheduler's bookings
@@ -83,8 +73,9 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
   // Helpers for mapping date to day of week
   const getDayOfWeekFromDate = (dateStr: string) => {
     if (!dateStr) return -1;
-    const d = new Date(dateStr);
-    const jsDay = d.getDay(); // 0 = Sun, 1 = Mon, 2 = Tue, 3 = Wed, 4 = Thu, 5 = Fri, 6 = Sat
+    const [y, m, d] = dateStr.split('-');
+    const dateObj = new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
+    const jsDay = dateObj.getDay(); // 0 = Sun, 1 = Mon, 2 = Tue, 3 = Wed, 4 = Thu, 5 = Fri, 6 = Sat
     if (jsDay === 6) return 0; // Sat
     if (jsDay === 0) return 1; // Sun
     if (jsDay === 1) return 2; // Mon
@@ -96,34 +87,15 @@ export default function BookingsTab({ bookings, doctors, schedules, role, recept
 
   const getArabicDayName = (dateStr: string) => {
     if (!dateStr) return '';
-    const d = new Date(dateStr);
-    const day = d.getDay();
+    const [y, m, d] = dateStr.split('-');
+    const dateObj = new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
+    const day = dateObj.getDay();
     const dayNames = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
     return dayNames[day];
   };
 
   const getCardTemplateDate = (dayOfWeek: number): string => {
-    const yemenNow = getYemenTime();
-    const currentJsDay = yemenNow.getDay(); // 0 = Sun, 1 = Mon, 2 = Tue, 3 = Wed, 4 = Thu, 5 = Fri, 6 = Sat
-    
-    // Map JS Day index to our day index (0: Sat, 1: Sun, ..., 5: Thu)
-    const jsToOur = [1, 2, 3, 4, 5, -1, 0]; // Sun=1, Mon=2, Tue=3, Wed=4, Thu=5, Fri=-1, Sat=0
-    const ourCurrentDay = jsToOur[currentJsDay];
-    
-    if (ourCurrentDay === -1) {
-      // Today is Friday (rigid day off). Next booking slots can start from Saturday.
-      const daysToAdd = 1 + dayOfWeek;
-      const targetDate = new Date(yemenNow.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
-      return targetDate.toISOString().split('T')[0];
-    }
-
-    let diff = dayOfWeek - ourCurrentDay;
-    if (diff < 0) {
-      diff += 7;
-    }
-    
-    const targetDate = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
-    return targetDate.toISOString().split('T')[0];
+    return effectiveDate;
   };
 
   const targetDayOfWeek = getDayOfWeekFromDate(effectiveDate);

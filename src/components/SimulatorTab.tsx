@@ -358,7 +358,7 @@ export default function SimulatorTab({ onSendMessageCallback }: SimulatorTabProp
               </div>
               <div className="flex items-center justify-between border-t border-slate-50 pt-2">
                 <span className="text-slate-400 font-medium">آخر نشاط أو استجابة باليمن:</span>
-                <span className="text-slate-850 font-mono text-[10px]">{new Date(activeSession.last_interaction_at).toLocaleTimeString('ar-YE')}</span>
+                <span className="text-slate-850 font-mono text-[10px]">{new Date(activeSession.last_interaction_at).toLocaleTimeString('ar-YE', { timeZone: 'Asia/Aden' })}</span>
               </div>
             </div>
           ) : (
@@ -402,7 +402,7 @@ export default function SimulatorTab({ onSendMessageCallback }: SimulatorTabProp
                   <div className="flex-1 space-y-1">
                     <div className="flex justify-between items-center text-slate-400 text-[9px]">
                       <span>+{log.phone}</span>
-                      <span>{new Date(log.timestamp).toLocaleTimeString('ar-YE')}</span>
+                      <span>{new Date(log.timestamp).toLocaleTimeString('ar-YE', { timeZone: 'Asia/Aden' })}</span>
                     </div>
                     <p className="text-xs text-slate-800 font-sans leading-relaxed whitespace-pre-line">{log.message}</p>
                   </div>
