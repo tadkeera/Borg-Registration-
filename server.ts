@@ -2873,6 +2873,10 @@ async function executeBookingTransaction(phone: string, patientName: string, doc
   const shiftAr = shift === 'Morning' ? 'فترة صباحية' : 'فترة مسائية';
 
   await supabase.from('bot_sessions').upsert({ phone, current_state: 'COMPLETED', patient_name: patientName, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+  try {
+    await supabase.from('whatsapp_sessions').delete().eq('space_server_id', `ai_opts_${phone}`);
+    await supabase.from('whatsapp_sessions').delete().eq('space_server_id', `ai_sng_${phone}`);
+  } catch (_) {}
 
   // الرسالة الأولى: تذكرة الحجز
   const msg1 = `تم تاكيد الحجز بنجاح\nالاسم (${patientName})\nالموعد (${bookingDate} - ${shiftAr})\nعيادة الطبيب (${docName})\nرقم الدور *${getCircledNumber(queueNumber)}*\nنتمنى لكم دوام الصحة والعافية`;
@@ -2912,34 +2916,94 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
   if (nlu.intent === 'RESET' || messageText.trim() === '0') {
     let greeting = `اهلا بك اخي العزيز في مستشفى برج الاطباء ، يمكنك ببساطة مراسلتنا باللهجة اليمنية العادية وسيقوم الذكاء الاصطناعي بخدمتك فوراً، مثال:\n*"أشتي أحجز لوالدي أحمد عند الدكتور وليد باطنية فترة الصباح"*\n\nأو يمكنك اختيار الطبيب بإرسال رقمه من القائمة:\n`;
     activeDoctors.forEach((doc, idx) => { greeting += `\n*${idx + 1}* - د. ${doc.name} (${doc.specialty})`; });
-    await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'SELECTING_DOCTOR', patient_name: null, selected_doctor_id: null, selected_schedule_id: null, selected_date: null, selected_shift: null, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+    await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'SELECTING_DOCTOR', patient_name: null, selected_doctor_id: null, selected_schedule_id: null, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+    try {
+      await supabase.from('whatsapp_sessions').delete().eq('space_server_id', `ai_opts_${cleanPhone}`);
+      await supabase.from('whatsapp_sessions').delete().eq('space_server_id', `ai_sng_${cleanPhone}`);
+    } catch (_) {}
     return greeting;
   }
 
   if (session && session.current_state === 'CONFIRMING' && session.selected_schedule_id) {
-    if (nlu.intent === 'CONFIRMATION' || messageText.trim() === '1') return await executeBookingTransaction(cleanPhone, session.patient_name || 'العزيز', session.selected_doctor_id, session.selected_schedule_id, session.selected_date, session.selected_shift, supabase);
-    else if (nlu.intent === 'CANCELLATION') {
+    if (nlu.intent === 'CONFIRMATION' || messageText.trim() === '1') {
+      let dateStr = '';
+      let shiftVal: 'Morning' | 'Evening' = 'Morning';
+      try {
+        const { data: wsRow } = await supabase.from('whatsapp_sessions').select('session_data').eq('space_server_id', `ai_sng_${cleanPhone}`).maybeSingle();
+        if (wsRow?.session_data) {
+          const p = JSON.parse(wsRow.session_data);
+          dateStr = p.date || ''; shiftVal = p.shift || 'Morning';
+        }
+      } catch (_) {}
+      if (!dateStr) {
+        const { data: sch } = await supabase.from('schedules').select('*').eq('id', session.selected_schedule_id).single();
+        if (sch) {
+          const yNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Aden' }));
+          const jsDay = sch.day_of_week === 0 ? 6 : sch.day_of_week - 1;
+          let diff = jsDay - yNow.getDay();
+          if (diff < 0) diff += 7;
+          const d = new Date(yNow.getTime() + diff * 86400000);
+          dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          shiftVal = parseInt(sch.start_time) < 13 ? 'Morning' : 'Evening';
+        }
+      }
+      return await executeBookingTransaction(cleanPhone, session.patient_name || 'العزيز', session.selected_doctor_id || '', session.selected_schedule_id, dateStr, shiftVal, supabase);
+    } else if (nlu.intent === 'CANCELLATION') {
       await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'IDLE' }, { onConflict: 'phone' });
       return "تم إلغاء طلب الحجز بنجاح. أرسل *مرحبا* للبدء من جديد.";
     }
   }
 
-  if (session && session.current_state === 'SELECTING_DAY' && session.session_data) {
+  if (session && session.current_state === 'SELECTING_DAY') {
     let options: any[] = [];
-    try { options = JSON.parse(session.session_data).options || []; } catch (_) {}
+    let savedPatName: string | null = null;
+    let savedDocId: string | null = null;
+    try {
+      const { data: wsRow } = await supabase.from('whatsapp_sessions').select('session_data').eq('space_server_id', `ai_opts_${cleanPhone}`).maybeSingle();
+      if (wsRow?.session_data) {
+        const parsed = JSON.parse(wsRow.session_data);
+        options = parsed.options || [];
+        savedPatName = parsed.patientName || null;
+        savedDocId = parsed.doctorId || null;
+      }
+    } catch (_) {}
+
     const choiceIdx = parseInt(messageText.trim()) - 1;
     if (!isNaN(choiceIdx) && choiceIdx >= 0 && choiceIdx < options.length) {
       const selectedSlot = options[choiceIdx];
       const { data: bCntData } = await supabase.from('bookings').select('id', { count: 'exact', head: true }).eq('schedule_id', selectedSlot.schedule.id).eq('booking_date', selectedSlot.date).neq('status', 'cancelled').neq('payment_status', 'cancelled');
       if ((bCntData?.count || 0) >= selectedSlot.schedule.max_capacity) return `عذراً، هذا الموعد امتلأ للتو. يرجى اختيار موعد آخر أو إرسال *مرحبا* لتحديث المواعيد.`;
-      return await executeBookingTransaction(cleanPhone, session.patient_name || 'المريض', selectedSlot.schedule.doctor_id, selectedSlot.schedule.id, selectedSlot.date, parseInt(selectedSlot.schedule.start_time) < 13 ? 'Morning' : 'Evening', supabase);
+      const finalPatName = savedPatName || session.patient_name || 'المريض';
+      const finalDocId = savedDocId || selectedSlot.schedule.doctor_id;
+      return await executeBookingTransaction(cleanPhone, finalPatName, finalDocId, selectedSlot.schedule.id, selectedSlot.date, parseInt(selectedSlot.schedule.start_time) < 13 ? 'Morning' : 'Evening', supabase);
     }
   }
 
   if (session && session.current_state === 'AWAITING_NAME' && session.selected_schedule_id) {
     const patName = messageText.trim();
     if (patName.length < 2) return "يرجى كتابة اسم المريض بشكل واضح لتأكيد الحجز:";
-    return await executeBookingTransaction(cleanPhone, patName, session.selected_doctor_id, session.selected_schedule_id, session.selected_date, session.selected_shift, supabase);
+    let dateStr = '';
+    let shiftVal: 'Morning' | 'Evening' = 'Morning';
+    try {
+      const { data: wsRow } = await supabase.from('whatsapp_sessions').select('session_data').eq('space_server_id', `ai_sng_${cleanPhone}`).maybeSingle();
+      if (wsRow?.session_data) {
+        const p = JSON.parse(wsRow.session_data);
+        dateStr = p.date || ''; shiftVal = p.shift || 'Morning';
+      }
+    } catch (_) {}
+    if (!dateStr) {
+      const { data: sch } = await supabase.from('schedules').select('*').eq('id', session.selected_schedule_id).single();
+      if (sch) {
+        const yNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Aden' }));
+        const jsDay = sch.day_of_week === 0 ? 6 : sch.day_of_week - 1;
+        let diff = jsDay - yNow.getDay();
+        if (diff < 0) diff += 7;
+        const d = new Date(yNow.getTime() + diff * 86400000);
+        dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        shiftVal = parseInt(sch.start_time) < 13 ? 'Morning' : 'Evening';
+      }
+    }
+    return await executeBookingTransaction(cleanPhone, patName, session.selected_doctor_id || '', session.selected_schedule_id, dateStr, shiftVal, supabase);
   }
 
   let targetDoctor: Doctor | null = null;
@@ -2966,15 +3030,18 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
     const slot = matchingSlots[0];
     const shiftValue = parseInt(slot.schedule.start_time.split(':')[0]) < 13 ? 'Morning' : 'Evening';
     if (!patientName) {
-      await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'AWAITING_NAME', selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, selected_date: slot.date, selected_shift: shiftValue, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+      await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'AWAITING_NAME', selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+      await supabase.from('whatsapp_sessions').upsert({ space_server_id: `ai_sng_${cleanPhone}`, session_data: JSON.stringify({ date: slot.date, shift: shiftValue }), updated_at: new Date().toISOString() });
       return `اهلا بك اخي العزيز في مستشفى برج الاطباء\nوجدنا موعداً متاحاً لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n📅 اليوم: *${slot.dayName}* (${slot.date}) - فترة *${slot.shiftLabel}*\n\nفضلاً، يرجى كتابة *اسم المريض* لتأكيد الحجز التلقائي:`;
     } else {
-      await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'CONFIRMING', patient_name: patientName, selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, selected_date: slot.date, selected_shift: shiftValue, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+      await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'CONFIRMING', patient_name: patientName, selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+      await supabase.from('whatsapp_sessions').upsert({ space_server_id: `ai_sng_${cleanPhone}`, session_data: JSON.stringify({ date: slot.date, shift: shiftValue }), updated_at: new Date().toISOString() });
       return `اهلا بك اخي العزيز في مستشفى برج الاطباء\nفهمنا طلبك بالتسجيل للمريض: *${patientName}*\n👨‍⚕️ الطبيب: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n\nالموعد المتاح الوحيد هو:\n📅 اليوم: *${slot.dayName}* (${slot.date})\n⏰ الفترة: *${slot.shiftLabel}*\n\nيرجى تأكيد الحجز بالرد بكلمة *نعم* أو *أكد* (أو أرسل *إلغاء* للتراجع):`;
     }
   }
 
-  await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'SELECTING_DAY', patient_name: patientName, selected_doctor_id: targetDoctor.id, session_data: JSON.stringify({ options: matchingSlots }), last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+  await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'SELECTING_DAY', patient_name: patientName, selected_doctor_id: targetDoctor.id, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+  await supabase.from('whatsapp_sessions').upsert({ space_server_id: `ai_opts_${cleanPhone}`, session_data: JSON.stringify({ options: matchingSlots, patientName, doctorId: targetDoctor.id }), updated_at: new Date().toISOString() });
   let promptReply = `اهلا بك اخي العزيز في مستشفى برج الاطباء\nمواعيد عيادات الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) متاحة في الأيام والفترات التالية:\n`;
   matchingSlots.forEach((s, i) => { promptReply += `\n*${i + 1}* ⬅️ يوم ${s.dayName} (${s.date}) - فترة ${s.shiftLabel} (${s.schedule.start_time})`; });
   promptReply += `\n\nفضلاً، أرسل *رقم الموعد المناسب* من 1 إلى ${matchingSlots.length} لإتمام الحجز فوراً:`;
