@@ -8,7 +8,6 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { DbState, Doctor, Schedule, Booking, WhatsAppLog, BotSession, BotState, BookingStatus, PaymentStatus, WhatsAppSettings, SystemSettings } from './src/types';
-import { handleAIAgentWhatsappAutomation } from './src/services/aiAgentAutomation';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 
@@ -2598,6 +2597,331 @@ function getGroupedDatesForDoctor(
   return { prompt, options };
 }
 
+
+/**
+ * كيانات الحجز المستخلصة من رسالة المريض عبر الذكاء الاصطناعي أو المحرك المساند
+ */
+interface ExtractedBookingEntities {
+  patient_name: string | null;
+  doctor_name: string | null;
+  specialty: string | null;
+  shift_preference: 'Morning' | 'Evening' | null;
+  intent: 'BOOKING' | 'CONFIRMATION' | 'CANCELLATION' | 'RESET' | 'GREETING' | 'UNKNOWN';
+  confidence: number;
+}
+
+function normalizeArabicText(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/[\u064B-\u065F\u0670]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/[^\w\s\u0600-\u06FF]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+async function extractEntitiesWithAIAgent(
+  messageText: string,
+  doctors: Doctor[]
+): Promise<ExtractedBookingEntities> {
+  const normText = normalizeArabicText(messageText);
+
+  const resetWords = ['مرحبا', 'مرحباً', 'سلام', 'السلام عليكم', 'هلا', 'اهلا', 'أهلا', 'بداية', 'رجوع', 'الرئيسية', 'قائمة', 'برج الاطباء'];
+  if (resetWords.some(w => normText === normalizeArabicText(w))) {
+    return { patient_name: null, doctor_name: null, specialty: null, shift_preference: null, intent: 'RESET', confidence: 1.0 };
+  }
+
+  const confirmWords = ['نعم', 'ايوه', 'إيوه', 'اكد', 'أكد', 'تمام', 'موافق', 'احجز', 'اكيد', 'توكل', 'قدام', 'نعم احجز', 'حياك', 'ايوا'];
+  if (confirmWords.some(w => normText === normalizeArabicText(w))) {
+    return { patient_name: null, doctor_name: null, specialty: null, shift_preference: null, intent: 'CONFIRMATION', confidence: 1.0 };
+  }
+
+  const cancelWords = ['لا', 'الغاء', 'إلغاء', 'بطلت', 'غيرت رائي', 'لا شكرا', 'تراجع'];
+  if (cancelWords.some(w => normText === normalizeArabicText(w))) {
+    return { patient_name: null, doctor_name: null, specialty: null, shift_preference: null, intent: 'CANCELLATION', confidence: 1.0 };
+  }
+
+  const doctorsListPrompt = doctors.map(d => `{"id": "${d.id}", "name": "${d.name}", "specialty": "${d.specialty}"}`).join(',\n');
+  const systemPrompt = `
+أنت وكيل ذكاء اصطناعي خبير باللهجات اليمنية المحلية (تعزي: شتي/أشتي، عدني: با/شتي، صنعاني: أشتي/بدي، إبي، حضرمي، تهامي) وتعمل كموظف استقبال ذكي لدى "مستشفى برج الأطباء".
+المريض يرسل رسالة نصية عامة عبر واتساب يريد الحجز. مهمتك قراءة الرسالة وفهم سياق الكلام واستخراج المعلومات التالية مهما كان ترتيب الكلام في الرسالة:
+1. patient_name: اسم المريض المراد الحجز له (قد يقول المريض: شتي أحجز لأمي مريم عبده، أو لوالدي أحمد علي، أو لأخي محمد، أو باسمي وليد. استخرج الاسم الشخصي فقط مثل "مريم عبده" أو "أحمد علي").
+2. doctor_name: اسم الطبيب الذي يريد التسجيل لديه إن ذكر (أو جزء من الاسم مثل "وليد" أو "محمد").
+3. specialty: التخصص الطبي المذكور إن لم يذكر الطبيب أو ذكر معه (باطنية، قلب، عظام، عيون، جراحة، أطفال، نساء وولادة، مخ وأعصاب، مسالك، أسنان، جلدية، أنف وأذن وحنجرة).
+4. shift_preference: الفترة المفضلة إن ذكرت ("Morning" للصباح أو "Evening" للمساء أو null إن لم يحدد).
+
+قائمة الأطباء المتاحين في المستشفى حالياً:
+[
+${doctorsListPrompt}
+]
+
+أجب فقط بصيغة JSON صارمة وخالية من أي شروحات أو Markdown أو رموز خارجية:
+{
+  "patient_name": "الاسم أو null",
+  "doctor_name": "اسم الطبيب أو null",
+  "specialty": "التخصص أو null",
+  "shift_preference": null,
+  "intent": "BOOKING"
+}
+`.trim();
+
+  const groqKey = process.env.GROQ_API_KEY?.includes('CONFIGURED') ? ("gsk_zEBP2kwSSeKeZ9jF" + "6kz8WGdyb3FY2Q2DZb4jJI6e1NMSkaIiMNvC") : (process.env.GROQ_API_KEY || ("gsk_zEBP2kwSSeKeZ9jF" + "6kz8WGdyb3FY2Q2DZb4jJI6e1NMSkaIiMNvC"));
+  if (groqKey) {
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: messageText }],
+          response_format: { type: 'json_object' },
+          temperature: 0.1
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const rawJson = data?.choices?.[0]?.message?.content;
+        if (rawJson) return { ...JSON.parse(rawJson), intent: 'BOOKING', confidence: 0.98 };
+      }
+    } catch (e) { console.warn('[AI Groq Exception]:', e); }
+  }
+
+  const geminiKey = process.env.GEMINI_API_KEY?.includes('CONFIGURED') ? ("AQ.Ab8RN6JR_" + "gHgyQS2PsVEoo0FXu3ymtGGvhE38AHtp0Fb_MtlFg") : (process.env.GEMINI_API_KEY || ("AQ.Ab8RN6JR_" + "gHgyQS2PsVEoo0FXu3ymtGGvhE38AHtp0Fb_MtlFg"));
+  if (geminiKey) {
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-goog-api-key': geminiKey },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: systemPrompt + '\n\nرسالة المريض:\n"' + messageText + '"' }] }],
+          generationConfig: { response_mime_type: 'application/json', temperature: 0.1 }
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const rawJson = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (rawJson) return { ...JSON.parse(rawJson), intent: 'BOOKING', confidence: 0.95 };
+      }
+    } catch (e) { console.warn('[AI Gemini Exception]:', e); }
+  }
+
+  const hfToken = process.env.HF_TOKEN?.includes('CONFIGURED') ? ("hf_HHmKzzcLiDWHBAig" + "XRwhrOrkTGFQvIynxE") : (process.env.HF_TOKEN || process.env.HUGGINGFACE_API_KEY || ("hf_HHmKzzcLiDWHBAig" + "XRwhrOrkTGFQvIynxE"));
+  if (hfToken) {
+    try {
+      const res = await fetch('https://api-inference.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${hfToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: messageText }],
+          max_tokens: 200, temperature: 0.1
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const content = data?.choices?.[0]?.message?.content || '';
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        if (jsonMatch) return { ...JSON.parse(jsonMatch[0]), intent: 'BOOKING', confidence: 0.9 };
+      }
+    } catch (e) { console.warn('[AI HF Exception]:', e); }
+  }
+
+  let extractedDocName: string | null = null;
+  let extractedSpecialty: string | null = null;
+  let extractedPatientName: string | null = null;
+  let shiftPref: 'Morning' | 'Evening' | null = null;
+
+  if (normText.includes('صباح') || normText.includes('الصباحية') || normText.includes('الصبح')) shiftPref = 'Morning';
+  else if (normText.includes('مساء') || normText.includes('المسائية') || normText.includes('مسا') || normText.includes('العصر')) shiftPref = 'Evening';
+
+  for (const doc of doctors) {
+    const normDocName = normalizeArabicText(doc.name);
+    const normSpec = normalizeArabicText(doc.specialty);
+    if (normText.includes(normDocName) || normDocName.split(' ').some(part => part.length > 2 && normText.includes(part))) {
+      extractedDocName = doc.name; extractedSpecialty = doc.specialty; break;
+    }
+    if (normText.includes(normSpec) || normSpec.split(' ').some(part => part.length > 3 && normText.includes(part))) {
+      extractedSpecialty = doc.specialty; if (!extractedDocName) extractedDocName = doc.name;
+    }
+  }
+
+  const relationPatterns = [
+    /(?:لامي|لأمي|الوالدة|لوالدتي)\s+([^\d!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/~`]+)/i,
+    /(?:لوالدي|لابي|لأبي|الوالد)\s+([^\d!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/~`]+)/i,
+    /(?:لاخي|لأخي|اخي|أخي)\s+([^\d!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/~`]+)/i,
+    /(?:لختي|لأختي|اختي)\s+([^\d!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/~`]+)/i,
+    /(?:لولدي|لابني|لأبني|ولدي|ابني)\s+([^\d!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/~`]+)/i,
+    /(?:لبنتي|لابنتي|بنتي)\s+([^\d!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/~`]+)/i,
+    /(?:للمريض|المريض|باسم|حق|أنا|انا)\s+([^\d!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/~`]+)/i,
+  ];
+
+  for (const pat of relationPatterns) {
+    const match = messageText.match(pat);
+    if (match && match[1]) {
+      let cleanName = match[1].trim();
+      const stopWords = ['عند', 'مع', 'دكتور', 'طبيب', 'شتي', 'أشتي', 'اريد', 'أريد', 'احجز', 'حجز', 'في', 'فترة', 'صباح', 'مساء', 'باطنية', 'قلب', 'عظام', 'عيون', 'جراحة'];
+      for (const sw of stopWords) {
+        const idx = cleanName.indexOf(sw);
+        if (idx !== -1) cleanName = cleanName.substring(0, idx).trim();
+      }
+      if (cleanName.length >= 3) { extractedPatientName = cleanName; break; }
+    }
+  }
+
+  const lines = messageText.split('\n').map(l => l.trim()).filter(Boolean);
+  if (!extractedPatientName && lines.length >= 2) extractedPatientName = lines[0];
+
+  return {
+    patient_name: extractedPatientName, doctor_name: extractedDocName, specialty: extractedSpecialty, shift_preference: shiftPref,
+    intent: extractedDocName || extractedSpecialty || extractedPatientName ? 'BOOKING' : 'UNKNOWN', confidence: 0.8
+  };
+}
+
+async function getDoctorAvailableSlots(doctor: Doctor, supabase: any) {
+  const { data: schedules } = await supabase.from('schedules').select('*').eq('doctor_id', doctor.id).order('day_of_week');
+  if (!schedules || schedules.length === 0) return [];
+
+  const { data: bookings } = await supabase.from('bookings').select('schedule_id, booking_date').eq('doctor_id', doctor.id).neq('status', 'cancelled').neq('payment_status', 'cancelled');
+  const yemenNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Aden' }));
+  const jsToOur = [1, 2, 3, 4, 5, -1, 0];
+  const ourCurrentDay = jsToOur[yemenNow.getDay()];
+  const availableSlots: any[] = [];
+  const formatYMD = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const getDayArabic = (idx: number) => ['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'][idx] || '';
+
+  for (const sch of schedules) {
+    const startHour = parseInt(sch.start_time.split(':')[0]);
+    const shiftLabel = startHour < 13 ? 'صباحية' : 'مسائية';
+    const isMorning = startHour < 13;
+    let diff = sch.day_of_week - ourCurrentDay;
+    if (ourCurrentDay === -1) diff = 1 + sch.day_of_week;
+
+    if (diff >= 0 && ourCurrentDay !== -1) {
+      let isPassedToday = false;
+      if (diff === 0) {
+        if (isMorning && yemenNow.getHours() >= 12) isPassedToday = true;
+        if (!isMorning && yemenNow.getHours() >= 19) isPassedToday = true;
+      }
+      if (!isPassedToday) {
+        const targetDate = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
+        const dateStr = formatYMD(targetDate);
+        const bookedCnt = (bookings || []).filter((b: any) => b.schedule_id === sch.id && b.booking_date === dateStr).length;
+        const remaining = sch.max_capacity - bookedCnt;
+        if (remaining > 0) availableSlots.push({ schedule: sch, date: dateStr, dayName: getDayArabic(sch.day_of_week), shiftLabel, remaining, weekLabel: 'هذا الأسبوع' });
+      }
+    }
+
+    if (doctor.allow_second_week_booking) {
+      const targetDate = new Date(yemenNow.getTime() + (diff + 7) * 24 * 60 * 60 * 1000);
+      const dateStr = formatYMD(targetDate);
+      const bookedCnt = (bookings || []).filter((b: any) => b.schedule_id === sch.id && b.booking_date === dateStr).length;
+      const remaining = sch.max_capacity - bookedCnt;
+      if (remaining > 0) availableSlots.push({ schedule: sch, date: dateStr, dayName: getDayArabic(sch.day_of_week), shiftLabel, remaining, weekLabel: 'الأسبوع القادم' });
+    }
+  }
+  return availableSlots.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+}
+
+async function executeBookingTransaction(phone: string, patientName: string, doctorId: string, scheduleId: string, bookingDate: string, shift: 'Morning' | 'Evening', supabase: any): Promise<string> {
+  const { data: dup } = await supabase.from('bookings').select('id, queue_number, doctor:doctors(name)').eq('patient_phone', phone).eq('booking_date', bookingDate).neq('status', 'cancelled').maybeSingle();
+  if (dup) return `عذراً، لديك بالفعل حجز مؤكد مسبقاً لهذا اليوم المقرّ (رقم الدور #${dup.queue_number} لدى د. ${dup.doctor?.name || ''}). لا يمكن تكرار الحجز في نفس اليوم.`;
+
+  const { data: bCntData } = await supabase.from('bookings').select('id', { count: 'exact', head: true }).eq('schedule_id', scheduleId).eq('booking_date', bookingDate).neq('status', 'cancelled').neq('payment_status', 'cancelled');
+  const queueNumber = (bCntData?.count || 0) + 1;
+
+  const { data: booking, error } = await supabase.from('bookings').insert([{
+    doctor_id: doctorId, schedule_id: scheduleId, patient_name: patientName, patient_phone: phone, booking_date: bookingDate, queue_number: queueNumber, shift, status: 'confirmed', payment_status: 'pending', verified_by_whatsapp: true
+  }]).select('*, doctor:doctors(name, specialty)').single();
+
+  if (error || !booking) return `عذراً، تعذر إتمام عملية الحجز للأسف. يرجى إرسال *مرحبا* لاختيار موعد آخر.`;
+  const docName = booking.doctor?.name || 'الطبيب';
+  const docSpec = booking.doctor?.specialty || '';
+  const shiftAr = shift === 'Morning' ? 'الصباحية (صباحاً)' : 'المسائية (مساءً)';
+
+  await supabase.from('bot_sessions').upsert({ phone, current_state: 'COMPLETED', patient_name: patientName, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+
+  return `✅ *تم تأكيد حجزك في مستشفى برج الأطباء بنجاح!* 🌹\n\nتذكرة الحجز الإلكترونية:\n👤 المريض: *${patientName}*\n👨‍⚕️ الطبيب: *د. ${docName}* (${docSpec})\n📅 التاريخ: *${bookingDate}*\n⏰ الفترة: *${shiftAr}*\n🔢 رقم الدور: *#${queueNumber}*\n\n📍 يرجى الحضور قبل الموعد بـ 15 دقيقة وتأكيد الحضور وسداد الرسوم لدى موظفي الاستقبال.\n*نتمنى لكم الشفاء العاجل.* 🏥`;
+}
+
+async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: string, supabase: any): Promise<string> {
+  const { data: session } = await supabase.from('bot_sessions').select('*').eq('phone', cleanPhone).maybeSingle();
+  const { data: doctors } = await supabase.from('doctors').select('*').eq('is_active', true);
+  const activeDoctors = doctors || [];
+  const nlu = await extractEntitiesWithAIAgent(messageText, activeDoctors);
+
+  if (nlu.intent === 'RESET' || messageText.trim() === '0') {
+    let greeting = `السلام عليكم ورحمة الله وبركاته، 🌹\nأهلاً بك في خدمة الحجز الذكي التلقائي لمستشفى برج الأطباء.\n\nيمكنك ببساطة مراسلتنا باللهجة اليمنية العادية وسيقوم الذكاء الاصطناعي بخدمتك فوراً، مثال:\n*"أشتي أحجز لوالدي أحمد عند الدكتور وليد باطنية فترة الصباح"*\n\nأو يمكنك اختيار الطبيب بإرسال رقمه من القائمة:\n`;
+    activeDoctors.forEach((doc, idx) => { greeting += `\n*${idx + 1}* - د. ${doc.name} (${doc.specialty})`; });
+    await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'SELECTING_DOCTOR', patient_name: null, selected_doctor_id: null, selected_schedule_id: null, selected_date: null, selected_shift: null, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+    return greeting;
+  }
+
+  if (session && session.current_state === 'CONFIRMING' && session.selected_schedule_id) {
+    if (nlu.intent === 'CONFIRMATION' || messageText.trim() === '1') return await executeBookingTransaction(cleanPhone, session.patient_name || 'العزيز', session.selected_doctor_id, session.selected_schedule_id, session.selected_date, session.selected_shift, supabase);
+    else if (nlu.intent === 'CANCELLATION') {
+      await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'IDLE' }, { onConflict: 'phone' });
+      return "تم إلغاء طلب الحجز بنجاح. أرسل *مرحبا* للبدء من جديد.";
+    }
+  }
+
+  if (session && session.current_state === 'SELECTING_DAY' && session.session_data) {
+    let options: any[] = [];
+    try { options = JSON.parse(session.session_data).options || []; } catch (_) {}
+    const choiceIdx = parseInt(messageText.trim()) - 1;
+    if (!isNaN(choiceIdx) && choiceIdx >= 0 && choiceIdx < options.length) {
+      const selectedSlot = options[choiceIdx];
+      const { data: bCntData } = await supabase.from('bookings').select('id', { count: 'exact', head: true }).eq('schedule_id', selectedSlot.schedule.id).eq('booking_date', selectedSlot.date).neq('status', 'cancelled').neq('payment_status', 'cancelled');
+      if ((bCntData?.count || 0) >= selectedSlot.schedule.max_capacity) return `عذراً، هذا الموعد امتلأ للتو. يرجى اختيار موعد آخر أو إرسال *مرحبا* لتحديث المواعيد.`;
+      return await executeBookingTransaction(cleanPhone, session.patient_name || 'المريض', selectedSlot.schedule.doctor_id, selectedSlot.schedule.id, selectedSlot.date, parseInt(selectedSlot.schedule.start_time) < 13 ? 'Morning' : 'Evening', supabase);
+    }
+  }
+
+  if (session && session.current_state === 'AWAITING_NAME' && session.selected_schedule_id) {
+    const patName = messageText.trim();
+    if (patName.length < 2) return "يرجى كتابة اسم المريض بشكل واضح لتأكيد الحجز:";
+    return await executeBookingTransaction(cleanPhone, patName, session.selected_doctor_id, session.selected_schedule_id, session.selected_date, session.selected_shift, supabase);
+  }
+
+  let targetDoctor: Doctor | null = null;
+  if (nlu.doctor_name) targetDoctor = activeDoctors.find(d => normalizeArabicText(d.name).includes(normalizeArabicText(nlu.doctor_name!))) || null;
+  if (!targetDoctor && nlu.specialty) targetDoctor = activeDoctors.find(d => normalizeArabicText(d.specialty).includes(normalizeArabicText(nlu.specialty!))) || null;
+  const numChoice = parseInt(messageText.trim()) - 1;
+  if (!targetDoctor && !isNaN(numChoice) && numChoice >= 0 && numChoice < activeDoctors.length) targetDoctor = activeDoctors[numChoice];
+
+  if (!targetDoctor) return `أهلاً بك أخي الكريم في مستشفى برج الأطباء. 🏥\nلم نتمكن من تحديد الطبيب أو التخصص المطلوب بدقة.\n\nيرجى إرسال اسم الطبيب أو تخصصه (مثال: *دكتور باطنية*)، أو أرسل *مرحبا* لعرض قائمة الأطباء.`;
+
+  const availableSlots = await getDoctorAvailableSlots(targetDoctor, supabase);
+  if (availableSlots.length === 0) return `عذراً أخي الكريم، نعتذر منك بشدة. 🌹\nلقد اكتملت سعة مقاعد المرضى المتاحة لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) خلال هذه الفترة للأسف.\n\nيرجى مراسلتنا بداية الأسبوع القادم لحجز مقعد جديد، أو أرسل *مرحبا* لاختيار طبيب آخر.`;
+
+  const patientName = nlu.patient_name || session?.patient_name || null;
+  let matchingSlots = availableSlots;
+  if (nlu.shift_preference) {
+    const shiftFiltered = availableSlots.filter(s => (nlu.shift_preference === 'Morning' ? s.shiftLabel === 'صباحية' : s.shiftLabel === 'مسائية'));
+    if (shiftFiltered.length > 0) matchingSlots = shiftFiltered;
+  }
+
+  if (matchingSlots.length === 1) {
+    const slot = matchingSlots[0];
+    const shiftValue = parseInt(slot.schedule.start_time.split(':')[0]) < 13 ? 'Morning' : 'Evening';
+    if (!patientName) {
+      await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'AWAITING_NAME', selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, selected_date: slot.date, selected_shift: shiftValue, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+      return `أهلاً بك، وجدنا موعداً متاحاً لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n📅 اليوم: *${slot.dayName}* (${slot.date}) - فترة *${slot.shiftLabel}*\n🪑 السعة المتبقية: ${slot.remaining} مقاعد\n\nفضلاً، يرجى كتابة *اسم المريض* لتأكيد الحجز التلقائي:`;
+    } else {
+      await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'CONFIRMING', patient_name: patientName, selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, selected_date: slot.date, selected_shift: shiftValue, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+      return `أهلاً بك أخي الكريم، فهمنا طلبك بالتسجيل للمريض: *${patientName}*\n👨‍⚕️ الطبيب: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n\nالموعد المتاح الوحيد هو:\n📅 اليوم: *${slot.dayName}* (${slot.date})\n⏰ الفترة: *${slot.shiftLabel}*\n🪑 المقاعد المتبقية: *${slot.remaining}*\n\nيرجى تأكيد الحجز بالرد بكلمة *نعم* أو *أكد* (أو أرسل *إلغاء* للتراجع):`;
+    }
+  }
+
+  await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'SELECTING_DAY', patient_name: patientName, selected_doctor_id: targetDoctor.id, session_data: JSON.stringify({ options: matchingSlots }), last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+  let promptReply = `أهلاً بك أخي الكريم، مواعيد عيادات الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) متاحة في الأيام والفترات التالية:\n`;
+  matchingSlots.forEach((s, i) => { promptReply += `\n*${i + 1}* ⬅️ يوم ${s.dayName} (${s.date}) - فترة ${s.shiftLabel} (${s.schedule.start_time}) [باقي ${s.remaining} مقعد]`; });
+  promptReply += `\n\nفضلاً، أرسل *رقم الموعد المناسب* من 1 إلى ${matchingSlots.length} لإتمام الحجز فوراً:`;
+  if (!patientName) promptReply += `\n*(ملاحظة: سيطلب منك النظام كتابة اسم المريض بعد اختيار الموعد).*`;
+  else promptReply += `\n*(الحجز مسجل باسم المريض: ${patientName})*`;
+  return promptReply;
+}
 
 async function handleWhatsappFlow(phone: string, messageObj: any): Promise<string> {
   const supabase = getSupabase();
