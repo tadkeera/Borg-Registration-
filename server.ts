@@ -2870,12 +2870,37 @@ async function executeBookingTransaction(phone: string, patientName: string, doc
 
   if (error || !booking) return `عذراً، تعذر إتمام عملية الحجز للأسف. يرجى إرسال *مرحبا* لاختيار موعد آخر.`;
   const docName = booking.doctor?.name || 'الطبيب';
-  const docSpec = booking.doctor?.specialty || '';
-  const shiftAr = shift === 'Morning' ? 'الصباحية (صباحاً)' : 'المسائية (مساءً)';
+  const shiftAr = shift === 'Morning' ? 'فترة صباحية' : 'فترة مسائية';
 
   await supabase.from('bot_sessions').upsert({ phone, current_state: 'COMPLETED', patient_name: patientName, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
 
-  return `✅ *تم تأكيد حجزك في مستشفى برج الأطباء بنجاح!* 🌹\n\nتذكرة الحجز الإلكترونية:\n👤 المريض: *${patientName}*\n👨‍⚕️ الطبيب: *د. ${docName}* (${docSpec})\n📅 التاريخ: *${bookingDate}*\n⏰ الفترة: *${shiftAr}*\n🔢 رقم الدور: *#${queueNumber}*\n\n📍 يرجى الحضور قبل الموعد بـ 15 دقيقة وتأكيد الحضور وسداد الرسوم لدى موظفي الاستقبال.\n*نتمنى لكم الشفاء العاجل.* 🏥`;
+  // الرسالة الأولى: تذكرة الحجز
+  const msg1 = `تم تاكيد الحجز بنجاح\nالاسم (${patientName})\nالموعد (${bookingDate} - ${shiftAr})\nعيادة الطبيب (${docName})\nرقم الدور *${getCircledNumber(queueNumber)}*\nنتمنى لكم دوام الصحة والعافية`;
+
+  // الرسالة الثانية التنبيهية
+  const todayStr = formatLocalYMD(getYemenTime());
+  const msg2 = `يرجى منكم تسديد قيمة الكشف في مدة اقصائها يومان من هذا التاريخ (${todayStr}) والا سيعتبر الحجز ملغيا ،وشكرا`;
+
+  // الرسالة الثالثة
+  const msg3 = `اخي العزيز لضمان استمرار تقديم الخدمات لكم يرجى حفظ رقم هاتف المستشفى في هاتفكم ،شاكرين تعاونكم`;
+
+  // إرسال الرسائل الثانية والثالثة عبر WhatsApp Cloud API أو البوابة المستقلة إن وجد اتصال حقيقي
+  try {
+    const { data: wsSettings } = await supabase.from('whatsapp_settings').select('*').eq('is_active', true).limit(1).maybeSingle();
+    if (wsSettings) {
+      await sendWhatsAppMessage(phone, msg2, wsSettings);
+      await sendWhatsAppMessage(phone, msg3, wsSettings);
+    }
+  } catch (_) {}
+
+  // تسجيل الرسائل التنبيهية في سجل المحادثات لتظهر في المحاكي بالترتيب الزمني الصحيح
+  const nowMs = Date.now();
+  await supabase.from('whatsapp_logs').insert([
+    { phone, direction: 'out', message: msg2, timestamp: new Date(nowMs + 600).toISOString() },
+    { phone, direction: 'out', message: msg3, timestamp: new Date(nowMs + 1200).toISOString() }
+  ]);
+
+  return msg1;
 }
 
 async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: string, supabase: any): Promise<string> {
@@ -2885,11 +2910,7 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
   const nlu = await extractEntitiesWithAIAgent(messageText, activeDoctors);
 
   if (nlu.intent === 'RESET' || messageText.trim() === '0') {
-    let greeting = `السلام عليكم ورحمة الله وبركاته، 🌹\nأهلاً بك في خدمة الحجز الذكي التلقائي لمستشفى برج الأطباء.\n\nيمكنك ببساطة مراسلتنا باللهجة اليمنية العادية وسيقوم الذكاء الاصطناعي بخدمتك فوراً، مثال:\n*"أشتي أحجز لوالدي أحمد عند الدكتور وليد باطنية فترة الصباح"*\n\nأو يمكنك اختيار الطبيب بإرسال رقمه من القائمة:\n`;
-    const yNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Aden' }));
-    if ((yNow.getDay() === 4 && yNow.getHours() >= 22) || yNow.getDay() === 5) {
-      greeting = `السلام عليكم ورحمة الله وبركاته، 🌹\n📢 *تنبيه: تم فتح باب التسجيل للأسبوع الجديد (السبت - الخميس).*\n\nأهلاً بك في خدمة الحجز الذكي لمستشفى برج الأطباء. يمكنك مراسلتنا باللهجة اليمنية العادية، مثال:\n*"أشتي حجز لوالدي أحمد عند الدكتور وليد باطنية الصبح"*\n\nأو اختر الطبيب بإرسال رقمه من القائمة:\n`;
-    }
+    let greeting = `اهلا بك اخي العزيز في مستشفى برج الاطباء ، يمكنك ببساطة مراسلتنا باللهجة اليمنية العادية وسيقوم الذكاء الاصطناعي بخدمتك فوراً، مثال:\n*"أشتي أحجز لوالدي أحمد عند الدكتور وليد باطنية فترة الصباح"*\n\nأو يمكنك اختيار الطبيب بإرسال رقمه من القائمة:\n`;
     activeDoctors.forEach((doc, idx) => { greeting += `\n*${idx + 1}* - د. ${doc.name} (${doc.specialty})`; });
     await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'SELECTING_DOCTOR', patient_name: null, selected_doctor_id: null, selected_schedule_id: null, selected_date: null, selected_shift: null, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
     return greeting;
@@ -2931,10 +2952,6 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
 
   const availableSlots = await getDoctorAvailableSlots(targetDoctor, supabase);
   if (availableSlots.length === 0) {
-    const yNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Aden' }));
-    if ((yNow.getDay() === 4 && yNow.getHours() >= 22) || yNow.getDay() === 5) {
-      return `عذراً أخي الكريم، نعتذر منك بشدة. 🌹\nلقد اكتملت بالفعل سعة الحجز المبكر لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) للأسبوع القادم.\n\nيرجى اختيار طبيب آخر أو إرسال *مرحبا* للقائمة الرئيسية.`;
-    }
     return `عذراً أخي الكريم، نعتذر منك بشدة. 🌹\nلقد اكتملت سعة مقاعد المرضى المتاحة لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) خلال هذه الفترة للأسف.\n\nملحوظة: يتم تصفير المقاعد وفتح باب التسجيل للأسبوع الجديد كل يوم خميس بعد الساعة 10:00 مساءً. يرجى مراسلتنا في ذلك الوقت أو أرسل *مرحبا* لاختيار طبيب آخر.`;
   }
 
@@ -2950,16 +2967,16 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
     const shiftValue = parseInt(slot.schedule.start_time.split(':')[0]) < 13 ? 'Morning' : 'Evening';
     if (!patientName) {
       await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'AWAITING_NAME', selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, selected_date: slot.date, selected_shift: shiftValue, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
-      return `أهلاً بك، وجدنا موعداً متاحاً لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n📅 اليوم: *${slot.dayName}* (${slot.date}) - فترة *${slot.shiftLabel}*\n🪑 السعة المتبقية: ${slot.remaining} مقاعد\n\nفضلاً، يرجى كتابة *اسم المريض* لتأكيد الحجز التلقائي:`;
+      return `اهلا بك اخي العزيز في مستشفى برج الاطباء\nوجدنا موعداً متاحاً لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n📅 اليوم: *${slot.dayName}* (${slot.date}) - فترة *${slot.shiftLabel}*\n\nفضلاً، يرجى كتابة *اسم المريض* لتأكيد الحجز التلقائي:`;
     } else {
       await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'CONFIRMING', patient_name: patientName, selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, selected_date: slot.date, selected_shift: shiftValue, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
-      return `أهلاً بك أخي الكريم، فهمنا طلبك بالتسجيل للمريض: *${patientName}*\n👨‍⚕️ الطبيب: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n\nالموعد المتاح الوحيد هو:\n📅 اليوم: *${slot.dayName}* (${slot.date})\n⏰ الفترة: *${slot.shiftLabel}*\n🪑 المقاعد المتبقية: *${slot.remaining}*\n\nيرجى تأكيد الحجز بالرد بكلمة *نعم* أو *أكد* (أو أرسل *إلغاء* للتراجع):`;
+      return `اهلا بك اخي العزيز في مستشفى برج الاطباء\nفهمنا طلبك بالتسجيل للمريض: *${patientName}*\n👨‍⚕️ الطبيب: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n\nالموعد المتاح الوحيد هو:\n📅 اليوم: *${slot.dayName}* (${slot.date})\n⏰ الفترة: *${slot.shiftLabel}*\n\nيرجى تأكيد الحجز بالرد بكلمة *نعم* أو *أكد* (أو أرسل *إلغاء* للتراجع):`;
     }
   }
 
   await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'SELECTING_DAY', patient_name: patientName, selected_doctor_id: targetDoctor.id, session_data: JSON.stringify({ options: matchingSlots }), last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
-  let promptReply = `أهلاً بك أخي الكريم، مواعيد عيادات الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) متاحة في الأيام والفترات التالية:\n`;
-  matchingSlots.forEach((s, i) => { promptReply += `\n*${i + 1}* ⬅️ يوم ${s.dayName} (${s.date}) - فترة ${s.shiftLabel} (${s.schedule.start_time}) [باقي ${s.remaining} مقعد]`; });
+  let promptReply = `اهلا بك اخي العزيز في مستشفى برج الاطباء\nمواعيد عيادات الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) متاحة في الأيام والفترات التالية:\n`;
+  matchingSlots.forEach((s, i) => { promptReply += `\n*${i + 1}* ⬅️ يوم ${s.dayName} (${s.date}) - فترة ${s.shiftLabel} (${s.schedule.start_time})`; });
   promptReply += `\n\nفضلاً، أرسل *رقم الموعد المناسب* من 1 إلى ${matchingSlots.length} لإتمام الحجز فوراً:`;
   if (!patientName) promptReply += `\n*(ملاحظة: سيطلب منك النظام كتابة اسم المريض بعد اختيار الموعد).*`;
   else promptReply += `\n*(الحجز مسجل باسم المريض: ${patientName})*`;
