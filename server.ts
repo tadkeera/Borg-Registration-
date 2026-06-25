@@ -2785,8 +2785,12 @@ async function getDoctorAvailableSlots(doctor: Doctor, supabase: any) {
 
   const { data: bookings } = await supabase.from('bookings').select('schedule_id, booking_date').eq('doctor_id', doctor.id).neq('status', 'cancelled').neq('payment_status', 'cancelled');
   const yemenNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Aden' }));
-  const jsToOur = [1, 2, 3, 4, 5, -1, 0];
-  const ourCurrentDay = jsToOur[yemenNow.getDay()];
+  const curJsDay = yemenNow.getDay(); // 0=Sun..6=Sat
+  const curHour = yemenNow.getHours();
+
+  // فحص هل نحن في نافذة تصفير المقاعد وبدء التسجيل المبكر للأسبوع الجديد (الخميس بعد 10:00 مساءً أو يوم الجمعة)
+  const isResetWindow = (curJsDay === 4 && curHour >= 22) || (curJsDay === 5);
+
   const availableSlots: any[] = [];
   const formatYMD = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const getDayArabic = (idx: number) => ['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'][idx] || '';
@@ -2795,30 +2799,59 @@ async function getDoctorAvailableSlots(doctor: Doctor, supabase: any) {
     const startHour = parseInt(sch.start_time.split(':')[0]);
     const shiftLabel = startHour < 13 ? 'صباحية' : 'مسائية';
     const isMorning = startHour < 13;
-    let diff = sch.day_of_week - ourCurrentDay;
-    if (ourCurrentDay === -1) diff = 1 + sch.day_of_week;
+    
+    // تحويل يوم الجدول (0=السبت..5=الخميس) إلى دليل جافاسكريبت (6=السبت، 0=الأحد..4=الخميس)
+    const schJsDay = (sch.day_of_week === 0) ? 6 : (sch.day_of_week - 1);
+    let daysToAdd = schJsDay - curJsDay;
 
-    if (diff >= 0 && ourCurrentDay !== -1) {
-      let isPassedToday = false;
-      if (diff === 0) {
-        if (isMorning && yemenNow.getHours() >= 12) isPassedToday = true;
-        if (!isMorning && yemenNow.getHours() >= 19) isPassedToday = true;
-      }
-      if (!isPassedToday) {
-        const targetDate = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
-        const dateStr = formatYMD(targetDate);
-        const bookedCnt = (bookings || []).filter((b: any) => b.schedule_id === sch.id && b.booking_date === dateStr).length;
-        const remaining = sch.max_capacity - bookedCnt;
-        if (remaining > 0) availableSlots.push({ schedule: sch, date: dateStr, dayName: getDayArabic(sch.day_of_week), shiftLabel, remaining, weekLabel: 'هذا الأسبوع' });
-      }
-    }
-
-    if (doctor.allow_second_week_booking) {
-      const targetDate = new Date(yemenNow.getTime() + (diff + 7) * 24 * 60 * 60 * 1000);
+    if (isResetWindow) {
+      // بعد تصفير الخميس 10 مساءً أو يوم الجمعة، جميع المقاعد تفتح للدورة الأسبوعية القادمة
+      if (daysToAdd <= 0) daysToAdd += 7;
+      
+      const targetDate = new Date(yemenNow.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
       const dateStr = formatYMD(targetDate);
       const bookedCnt = (bookings || []).filter((b: any) => b.schedule_id === sch.id && b.booking_date === dateStr).length;
       const remaining = sch.max_capacity - bookedCnt;
-      if (remaining > 0) availableSlots.push({ schedule: sch, date: dateStr, dayName: getDayArabic(sch.day_of_week), shiftLabel, remaining, weekLabel: 'الأسبوع القادم' });
+      
+      if (remaining > 0) {
+        availableSlots.push({
+          schedule: sch,
+          date: dateStr,
+          dayName: getDayArabic(sch.day_of_week),
+          shiftLabel,
+          remaining,
+          weekLabel: 'الأسبوع القادم (بدء التسجيل)'
+        });
+      }
+    } else {
+      // الأيام العادية (السبت صباحاً حتى الخميس قبل 10 مساءً)
+      const jsToOur = [1, 2, 3, 4, 5, -1, 0];
+      const ourCurrentDay = jsToOur[curJsDay];
+      let diff = sch.day_of_week - ourCurrentDay;
+      if (ourCurrentDay === -1) diff = 1 + sch.day_of_week;
+
+      if (diff >= 0 && ourCurrentDay !== -1) {
+        let isPassedToday = false;
+        if (diff === 0) {
+          if (isMorning && curHour >= 12) isPassedToday = true;
+          if (!isMorning && curHour >= 19) isPassedToday = true;
+        }
+        if (!isPassedToday) {
+          const targetDate = new Date(yemenNow.getTime() + diff * 24 * 60 * 60 * 1000);
+          const dateStr = formatYMD(targetDate);
+          const bookedCnt = (bookings || []).filter((b: any) => b.schedule_id === sch.id && b.booking_date === dateStr).length;
+          const remaining = sch.max_capacity - bookedCnt;
+          if (remaining > 0) availableSlots.push({ schedule: sch, date: dateStr, dayName: getDayArabic(sch.day_of_week), shiftLabel, remaining, weekLabel: 'هذا الأسبوع' });
+        }
+      }
+
+      if (doctor.allow_second_week_booking) {
+        const targetDate = new Date(yemenNow.getTime() + (diff + 7) * 24 * 60 * 60 * 1000);
+        const dateStr = formatYMD(targetDate);
+        const bookedCnt = (bookings || []).filter((b: any) => b.schedule_id === sch.id && b.booking_date === dateStr).length;
+        const remaining = sch.max_capacity - bookedCnt;
+        if (remaining > 0) availableSlots.push({ schedule: sch, date: dateStr, dayName: getDayArabic(sch.day_of_week), shiftLabel, remaining, weekLabel: 'الأسبوع القادم' });
+      }
     }
   }
   return availableSlots.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
@@ -2853,6 +2886,10 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
 
   if (nlu.intent === 'RESET' || messageText.trim() === '0') {
     let greeting = `السلام عليكم ورحمة الله وبركاته، 🌹\nأهلاً بك في خدمة الحجز الذكي التلقائي لمستشفى برج الأطباء.\n\nيمكنك ببساطة مراسلتنا باللهجة اليمنية العادية وسيقوم الذكاء الاصطناعي بخدمتك فوراً، مثال:\n*"أشتي أحجز لوالدي أحمد عند الدكتور وليد باطنية فترة الصباح"*\n\nأو يمكنك اختيار الطبيب بإرسال رقمه من القائمة:\n`;
+    const yNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Aden' }));
+    if ((yNow.getDay() === 4 && yNow.getHours() >= 22) || yNow.getDay() === 5) {
+      greeting = `السلام عليكم ورحمة الله وبركاته، 🌹\n📢 *تنبيه: تم فتح باب التسجيل للأسبوع الجديد (السبت - الخميس).*\n\nأهلاً بك في خدمة الحجز الذكي لمستشفى برج الأطباء. يمكنك مراسلتنا باللهجة اليمنية العادية، مثال:\n*"أشتي حجز لوالدي أحمد عند الدكتور وليد باطنية الصبح"*\n\nأو اختر الطبيب بإرسال رقمه من القائمة:\n`;
+    }
     activeDoctors.forEach((doc, idx) => { greeting += `\n*${idx + 1}* - د. ${doc.name} (${doc.specialty})`; });
     await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'SELECTING_DOCTOR', patient_name: null, selected_doctor_id: null, selected_schedule_id: null, selected_date: null, selected_shift: null, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
     return greeting;
@@ -2893,7 +2930,13 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
   if (!targetDoctor) return `أهلاً بك أخي الكريم في مستشفى برج الأطباء. 🏥\nلم نتمكن من تحديد الطبيب أو التخصص المطلوب بدقة.\n\nيرجى إرسال اسم الطبيب أو تخصصه (مثال: *دكتور باطنية*)، أو أرسل *مرحبا* لعرض قائمة الأطباء.`;
 
   const availableSlots = await getDoctorAvailableSlots(targetDoctor, supabase);
-  if (availableSlots.length === 0) return `عذراً أخي الكريم، نعتذر منك بشدة. 🌹\nلقد اكتملت سعة مقاعد المرضى المتاحة لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) خلال هذه الفترة للأسف.\n\nيرجى مراسلتنا بداية الأسبوع القادم لحجز مقعد جديد، أو أرسل *مرحبا* لاختيار طبيب آخر.`;
+  if (availableSlots.length === 0) {
+    const yNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Aden' }));
+    if ((yNow.getDay() === 4 && yNow.getHours() >= 22) || yNow.getDay() === 5) {
+      return `عذراً أخي الكريم، نعتذر منك بشدة. 🌹\nلقد اكتملت بالفعل سعة الحجز المبكر لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) للأسبوع القادم.\n\nيرجى اختيار طبيب آخر أو إرسال *مرحبا* للقائمة الرئيسية.`;
+    }
+    return `عذراً أخي الكريم، نعتذر منك بشدة. 🌹\nلقد اكتملت سعة مقاعد المرضى المتاحة لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) خلال هذه الفترة للأسف.\n\nملحوظة: يتم تصفير المقاعد وفتح باب التسجيل للأسبوع الجديد كل يوم خميس بعد الساعة 10:00 مساءً. يرجى مراسلتنا في ذلك الوقت أو أرسل *مرحبا* لاختيار طبيب آخر.`;
+  }
 
   const patientName = nlu.patient_name || session?.patient_name || null;
   let matchingSlots = availableSlots;
