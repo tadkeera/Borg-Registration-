@@ -2976,7 +2976,7 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
   const nlu = await extractEntitiesWithAIAgent(messageText, activeDoctors);
 
   if (nlu.intent === 'RESET' || messageText.trim() === '0') {
-    let greeting = `اهلا بك اخي العزيز في مستشفى برج الاطباء ، يمكنك ببساطة مراسلتنا باللهجة اليمنية العادية وسيقوم الذكاء الاصطناعي بخدمتك فوراً، مثال:\n*"أشتي أحجز لوالدي أحمد عند الدكتور وليد باطنية فترة الصباح"*\n\nأو يمكنك اختيار الطبيب بإرسال رقمه من القائمة:\n`;
+    let greeting = `اهلا بك اخي العزيز في مستشفى برج الاطباء ،اختر الطبيب المراد التسجيل لدية عبر ارسال رقم الطبيب من القائمة :\n`;
     activeDoctors.forEach((doc, idx) => { greeting += `\n*${idx + 1}* - د. ${doc.name} (${doc.specialty})`; });
     await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: 'SELECTING_DOCTOR', patient_name: null, selected_doctor_id: null, selected_schedule_id: null, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
     delete globalNodeStore[cleanPhone];
@@ -3012,7 +3012,7 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
   }
 
   if ((session && session.current_state?.startsWith('CONFIRMING')) || globalNodeStore[cleanPhone]?.state === 'CONFIRMING') {
-    if (nlu.intent === 'CONFIRMATION' || messageText.trim() === '1' || messageText.trim().toLowerCase() === 'نعم' || messageText.trim() === 'اكد' || messageText.trim() === 'أكد') {
+    if (nlu.intent === 'CONFIRMATION' || messageText.trim() === '1' || messageText.trim().toLowerCase() === 'نعم' || messageText.trim() === 'اكد' || messageText.trim() === 'أكد' || messageText.trim() === 'تاكيد') {
       let dateStr = '';
       let shiftVal: 'Morning' | 'Evening' = 'Morning';
       let schId = session?.selected_schedule_id || globalNodeStore[cleanPhone]?.schId;
@@ -3020,7 +3020,8 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
       let patName = session?.patient_name || globalNodeStore[cleanPhone]?.patName || 'العزيز';
 
       if (session?.current_state?.includes(':::')) {
-        const [_, sId, d, t, pN, dId] = session.current_state.split(':::');
+        const parts = session.current_state.split(':::');
+        const [sId, d, t, pN, dId] = parts[1]?.split('|') || [];
         schId = sId || schId; dateStr = d || ''; shiftVal = (t || 'Morning') as any;
         if (pN) patName = pN;
         if (dId) docId = dId;
@@ -3097,7 +3098,8 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
     let docId = session?.selected_doctor_id || globalNodeStore[cleanPhone]?.docId || '';
 
     if (session?.current_state?.includes(':::')) {
-      const [_, sId, d, t, dId] = session.current_state.split(':::');
+      const parts = session.current_state.split(':::');
+      const [sId, d, t, dId] = parts[1]?.split('|') || [];
       schId = sId || schId; dateStr = d || ''; shiftVal = (t || 'Morning') as any;
       if (dId) docId = dId;
     } else if (globalNodeStore[cleanPhone]) {
