@@ -2866,16 +2866,24 @@ async function executeBookingTransaction(phone: string, patientName: string, doc
     return `عذراً، المريض (${patientName}) لديه بالفعل حجز مؤكد مسبقاً لدى د. ${dup.doctor?.name || ''} في هذا اليوم (رقم الدور #${dup.queue_number}). لا يمكن تكرار الحجز عند نفس الطبيب لنفس المريض في نفس اليوم.`;
   }
 
-  const { data: bCntData } = await supabase.from('bookings').select('id', { count: 'exact', head: true }).eq('schedule_id', scheduleId).eq('booking_date', bookingDate).neq('status', 'cancelled').neq('payment_status', 'cancelled');
-  const queueNumber = (bCntData?.count || 0) + 1;
+  // حساب رقم الدور التسلسلي المستقل بدقة لكل طبيب وتاريخ وفترة (صباحية أو مسائية منفصلة)
+  const { count: exactShiftCount } = await supabase.from('bookings').select('*', { count: 'exact', head: true })
+    .eq('doctor_id', doctorId)
+    .eq('booking_date', bookingDate)
+    .eq('shift', shift)
+    .neq('status', 'cancelled')
+    .neq('payment_status', 'cancelled');
+
+  const calculatedQueueNumber = (exactShiftCount || 0) + 1;
 
   const { data: booking, error } = await supabase.from('bookings').insert([{
-    doctor_id: doctorId, schedule_id: scheduleId, patient_name: patientName, patient_phone: phone, booking_date: bookingDate, queue_number: queueNumber, shift, status: 'confirmed', payment_status: 'pending', verified_by_whatsapp: true
+    doctor_id: doctorId, schedule_id: scheduleId, patient_name: patientName, patient_phone: phone, booking_date: bookingDate, queue_number: calculatedQueueNumber, shift, status: 'confirmed', payment_status: 'pending', verified_by_whatsapp: true
   }]).select('*, doctor:doctors(name, specialty)').single();
 
   if (error || !booking) return `عذراً، تعذر إتمام عملية الحجز للأسف. يرجى إرسال *مرحبا* لاختيار موعد آخر.`;
   const docName = booking.doctor?.name || 'الطبيب';
   const shiftAr = shift === 'Morning' ? 'فترة صباحية' : 'فترة مسائية';
+  const finalQueueNum = booking.queue_number || calculatedQueueNumber;
 
   await supabase.from('bot_sessions').upsert({ phone, current_state: 'COMPLETED', patient_name: patientName, selected_doctor_id: null, selected_schedule_id: null, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
   delete globalNodeStore[phone];
@@ -2885,7 +2893,7 @@ async function executeBookingTransaction(phone: string, patientName: string, doc
   } catch (_) {}
 
   // الرسالة الأولى: تذكرة الحجز
-  const msg1 = `تم تاكيد الحجز بنجاح\nالاسم (${patientName})\nالموعد (${bookingDate} - ${shiftAr})\nعيادة الطبيب (${docName})\nرقم الدور *${getCircledNumber(queueNumber)}*\nنتمنى لكم دوام الصحة والعافية`;
+  const msg1 = `تم تاكيد الحجز بنجاح\nالاسم (${patientName})\nالموعد (${bookingDate} - ${shiftAr})\nعيادة الطبيب (${docName})\nرقم الدور *${getCircledNumber(finalQueueNum)}*\nنتمنى لكم دوام الصحة والعافية`;
 
   // الرسالة الثانية التنبيهية
   const todayStr = formatLocalYMD(getYemenTime());
