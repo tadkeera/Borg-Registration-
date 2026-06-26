@@ -2860,8 +2860,11 @@ async function getDoctorAvailableSlots(doctor: Doctor, supabase: any) {
 const globalNodeStore: Record<string, any> = {};
 
 async function executeBookingTransaction(phone: string, patientName: string, doctorId: string, scheduleId: string, bookingDate: string, shift: 'Morning' | 'Evening', supabase: any): Promise<string> {
-  const { data: dup } = await supabase.from('bookings').select('id, queue_number, doctor:doctors(name)').eq('patient_phone', phone).eq('booking_date', bookingDate).neq('status', 'cancelled').maybeSingle();
-  if (dup) return `عذراً، لديك بالفعل حجز مؤكد مسبقاً لهذا اليوم المقرّ (رقم الدور #${dup.queue_number} لدى د. ${dup.doctor?.name || ''}). لا يمكن تكرار الحجز في نفس اليوم.`;
+  // السماح لنفس رقم الواتساب بالحجز لدى عدة أطباء في نفس اليوم، ومنع تكرار الحجز عند نفس الطبيب لنفس المريض
+  const { data: dup } = await supabase.from('bookings').select('id, queue_number, patient_name, doctor:doctors(name)').eq('patient_phone', phone).eq('doctor_id', doctorId).eq('booking_date', bookingDate).neq('status', 'cancelled').maybeSingle();
+  if (dup && dup.patient_name === patientName) {
+    return `عذراً، المريض (${patientName}) لديه بالفعل حجز مؤكد مسبقاً لدى د. ${dup.doctor?.name || ''} في هذا اليوم (رقم الدور #${dup.queue_number}). لا يمكن تكرار الحجز عند نفس الطبيب لنفس المريض في نفس اليوم.`;
+  }
 
   const { data: bCntData } = await supabase.from('bookings').select('id', { count: 'exact', head: true }).eq('schedule_id', scheduleId).eq('booking_date', bookingDate).neq('status', 'cancelled').neq('payment_status', 'cancelled');
   const queueNumber = (bCntData?.count || 0) + 1;
@@ -2910,6 +2913,62 @@ async function executeBookingTransaction(phone: string, patientName: string, doc
   return msg1;
 }
 
+async function processTargetDoctorAutomation(
+  cleanPhone: string,
+  targetDoctor: Doctor,
+  patientName: string | null,
+  shiftPref: 'Morning' | 'Evening' | null,
+  activeDoctors: Doctor[],
+  supabase: any
+): Promise<string> {
+  const availableSlots = await getDoctorAvailableSlots(targetDoctor, supabase);
+  if (availableSlots.length === 0) {
+    return `عذراً أخي الكريم، نعتذر منك بشدة. 🌹\nلقد اكتملت سعة مقاعد المرضى المتاحة لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) خلال هذه الفترة للأسف.\n\nملحوظة: يتم تصفير المقاعد وفتح باب التسجيل للأسبوع الجديد كل يوم خميس بعد الساعة 10:00 مساءً. يرجى مراسلتنا في ذلك الوقت أو أرسل *مرحبا* لاختيار طبيب آخر.`;
+  }
+
+  let matchingSlots = availableSlots;
+  if (shiftPref) {
+    const shiftFiltered = availableSlots.filter(s => (shiftPref === 'Morning' ? s.shiftLabel === 'صباحية' : s.shiftLabel === 'مسائية'));
+    if (shiftFiltered.length > 0) matchingSlots = shiftFiltered;
+  }
+
+  if (matchingSlots.length === 1) {
+    const slot = matchingSlots[0];
+    const shiftValue = parseInt(slot.schedule.start_time.split(':')[0]) < 13 ? 'Morning' : 'Evening';
+    const sngStatePayload = `CONFIRMING:::${slot.schedule.id}|${slot.date}|${shiftValue}|${patientName || ''}|${targetDoctor.id}`;
+    const nameStatePayload = `AWAITING_NAME:::${slot.schedule.id}|${slot.date}|${shiftValue}|${targetDoctor.id}`;
+
+    globalNodeStore[cleanPhone] = {
+      state: patientName ? 'CONFIRMING' : 'AWAITING_NAME',
+      schId: slot.schedule.id, date: slot.date, shift: shiftValue, patName: patientName, docId: targetDoctor.id
+    };
+
+    if (!patientName) {
+      await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: nameStatePayload, selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+      try { await supabase.from('whatsapp_sessions').upsert({ space_server_id: `ai_sng_${cleanPhone}`, session_data: JSON.stringify({ date: slot.date, shift: shiftValue }), updated_at: new Date().toISOString() }); } catch (_) {}
+      return `اهلا بك اخي العزيز في مستشفى برج الاطباء\nوجدنا موعداً متاحاً لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n📅 اليوم: *${slot.dayName}* (${slot.date}) - فترة *${slot.shiftLabel}*\n\nفضلاً، يرجى كتابة *اسم المريض* لتأكيد الحجز التلقائي:`;
+    } else {
+      await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: sngStatePayload, patient_name: patientName, selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+      try { await supabase.from('whatsapp_sessions').upsert({ space_server_id: `ai_sng_${cleanPhone}`, session_data: JSON.stringify({ date: slot.date, shift: shiftValue }), updated_at: new Date().toISOString() }); } catch (_) {}
+      return `اهلا بك اخي العزيز في مستشفى برج الاطباء\nفهمنا طلبك بالتسجيل للمريض: *${patientName}*\n👨‍⚕️ الطبيب: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n\nالموعد المتاح الوحيد هو:\n📅 اليوم: *${slot.dayName}* (${slot.date})\n⏰ الفترة: *${slot.shiftLabel}*\n\nيرجى تأكيد الحجز بالرد بكلمة *نعم* أو *أكد* (أو أرسل *إلغاء* للتراجع):`;
+    }
+  }
+
+  const optsPayload = `SELECTING_DAY:::${matchingSlots.map(s => `${s.schedule.id}|${s.date}|${s.schedule.start_time}|${s.schedule.max_capacity}|${patientName || ''}|${targetDoctor.id}`).join(':::')}`;
+  globalNodeStore[cleanPhone] = {
+    state: 'SELECTING_DAY', options: matchingSlots, patientName: patientName, doctorId: targetDoctor.id
+  };
+
+  await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: optsPayload, patient_name: patientName, selected_doctor_id: targetDoctor.id, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
+  try { await supabase.from('whatsapp_sessions').upsert({ space_server_id: `ai_opts_${cleanPhone}`, session_data: JSON.stringify({ options: matchingSlots, patientName, doctorId: targetDoctor.id }), updated_at: new Date().toISOString() }); } catch (_) {}
+  let promptReply = `اهلا بك اخي العزيز في مستشفى برج الاطباء\nمواعيد عيادات الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) متاحة في الأيام والفترات التالية:\n`;
+  matchingSlots.forEach((s, i) => { promptReply += `\n*${i + 1}* ⬅️ يوم ${s.dayName} (${s.date}) - فترة ${s.shiftLabel} (${s.schedule.start_time})`; });
+  promptReply += `\n\nفضلاً، أرسل *رقم الموعد المناسب* من 1 إلى ${matchingSlots.length} لإتمام الحجز فوراً:`;
+  if (!patientName) promptReply += `\n*(ملاحظة: سيطلب منك النظام كتابة اسم المريض بعد اختيار الموعد).*`;
+  else promptReply += `\n*(الحجز مسجل باسم المريض: ${patientName})*`;
+  return promptReply;
+}
+
 async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: string, supabase: any): Promise<string> {
   const { data: session } = await supabase.from('bot_sessions').select('*').eq('phone', cleanPhone).maybeSingle();
   const { data: doctors } = await supabase.from('doctors').select('*').eq('is_active', true);
@@ -2926,6 +2985,30 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
       await supabase.from('whatsapp_sessions').delete().eq('space_server_id', `ai_sng_${cleanPhone}`);
     } catch (_) {}
     return greeting;
+  }
+
+  // 1. فحص هل المستخدم في حالة اختيار طبيب من تخصص متعدد (SELECTING_DOCTOR)
+  if ((session && session.current_state?.startsWith('SELECTING_DOCTOR___')) || globalNodeStore[cleanPhone]?.state === 'SELECTING_DOCTOR') {
+    let docIdsList: string[] = [];
+    let savedPatName: string | null = null;
+    if (session?.current_state?.includes('___')) {
+      const parts = session.current_state.split('___');
+      docIdsList = parts[1]?.split(',') || [];
+      savedPatName = parts[2] || null;
+    } else if (globalNodeStore[cleanPhone]?.docIds) {
+      docIdsList = globalNodeStore[cleanPhone].docIds;
+      savedPatName = globalNodeStore[cleanPhone].patientName;
+    }
+
+    const choiceIdx = parseInt(messageText.trim()) - 1;
+    if (!isNaN(choiceIdx) && choiceIdx >= 0 && choiceIdx < docIdsList.length) {
+      const pickedDocId = docIdsList[choiceIdx];
+      const pickedDoctor = activeDoctors.find(d => d.id === pickedDocId);
+      if (pickedDoctor) {
+        const finalPatName = savedPatName || session?.patient_name || nlu.patient_name || null;
+        return await processTargetDoctorAutomation(cleanPhone, pickedDoctor, finalPatName, nlu.shift_preference, activeDoctors, supabase);
+      }
+    }
   }
 
   if ((session && session.current_state?.startsWith('CONFIRMING')) || globalNodeStore[cleanPhone]?.state === 'CONFIRMING') {
@@ -3036,61 +3119,52 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
     return await executeBookingTransaction(cleanPhone, patName, docId, schId, dateStr, shiftVal, supabase);
   }
 
-  let targetDoctor: Doctor | null = null;
-  if (nlu.doctor_name) targetDoctor = activeDoctors.find(d => normalizeArabicText(d.name).includes(normalizeArabicText(nlu.doctor_name!))) || null;
-  if (!targetDoctor && nlu.specialty) targetDoctor = activeDoctors.find(d => normalizeArabicText(d.specialty).includes(normalizeArabicText(nlu.specialty!))) || null;
+  // البحث عن الأطباء المتطابقين (سواء بالاسم أو التخصص)
+  let matchingDoctors: Doctor[] = [];
+  if (nlu.doctor_name) {
+    matchingDoctors = activeDoctors.filter(d => normalizeArabicText(d.name).includes(normalizeArabicText(nlu.doctor_name!)) || normalizeArabicText(nlu.doctor_name!).includes(normalizeArabicText(d.name)));
+  }
+
   const numChoice = parseInt(messageText.trim()) - 1;
-  if (!targetDoctor && !isNaN(numChoice) && numChoice >= 0 && numChoice < activeDoctors.length) targetDoctor = activeDoctors[numChoice];
+  if (matchingDoctors.length === 0 && !isNaN(numChoice) && numChoice >= 0 && numChoice < activeDoctors.length) {
+    matchingDoctors = [activeDoctors[numChoice]];
+  }
 
-  if (!targetDoctor) return `أهلاً بك أخي الكريم في مستشفى برج الأطباء. 🏥\nلم نتمكن من تحديد الطبيب أو التخصص المطلوب بدقة.\n\nيرجى إرسال اسم الطبيب أو تخصصه (مثال: *دكتور باطنية*)، أو أرسل *مرحبا* لعرض قائمة الأطباء.`;
+  if (matchingDoctors.length === 0) {
+    const normMsg = normalizeArabicText(messageText);
+    const targetSpec = nlu.specialty ? normalizeArabicText(nlu.specialty) : normMsg;
+    matchingDoctors = activeDoctors.filter(d => {
+      const nSpec = normalizeArabicText(d.specialty);
+      return nSpec.length > 2 && (targetSpec.includes(nSpec) || normMsg.includes(nSpec) || nSpec.split(' ').some(p => p.length > 2 && normMsg.includes(p)));
+    });
+  }
 
-  const availableSlots = await getDoctorAvailableSlots(targetDoctor, supabase);
-  if (availableSlots.length === 0) {
-    return `عذراً أخي الكريم، نعتذر منك بشدة. 🌹\nلقد اكتملت سعة مقاعد المرضى المتاحة لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) خلال هذه الفترة للأسف.\n\nملحوظة: يتم تصفير المقاعد وفتح باب التسجيل للأسبوع الجديد كل يوم خميس بعد الساعة 10:00 مساءً. يرجى مراسلتنا في ذلك الوقت أو أرسل *مرحبا* لاختيار طبيب آخر.`;
+  if (matchingDoctors.length === 0) {
+    return `أهلاً بك أخي الكريم في مستشفى برج الأطباء. 🏥\nلم نتمكن من تحديد الطبيب أو التخصص المطلوب بدقة من رسالتك.\n\nيرجى إرسال اسم الطبيب أو تخصصه (مثال: *دكتور باطنية* أو *دكتور عظام*)، أو أرسل *مرحبا* لعرض قائمة جميع الأطباء.`;
   }
 
   const patientName = nlu.patient_name || session?.patient_name || null;
-  let matchingSlots = availableSlots;
-  if (nlu.shift_preference) {
-    const shiftFiltered = availableSlots.filter(s => (nlu.shift_preference === 'Morning' ? s.shiftLabel === 'صباحية' : s.shiftLabel === 'مسائية'));
-    if (shiftFiltered.length > 0) matchingSlots = shiftFiltered;
-  }
 
-  if (matchingSlots.length === 1) {
-    const slot = matchingSlots[0];
-    const shiftValue = parseInt(slot.schedule.start_time.split(':')[0]) < 13 ? 'Morning' : 'Evening';
-    const sngStatePayload = `CONFIRMING:::${slot.schedule.id}|${slot.date}|${shiftValue}|${patientName || ''}|${targetDoctor.id}`;
-    const nameStatePayload = `AWAITING_NAME:::${slot.schedule.id}|${slot.date}|${shiftValue}|${targetDoctor.id}`;
-
+  // إذا وجدنا عدة أطباء في نفس التخصص ولم يُحدد اسم طبيب معين
+  if (matchingDoctors.length > 1) {
+    const docIdsStr = matchingDoctors.map(d => d.id).join(',');
+    const selDocState = `SELECTING_DOCTOR___${docIdsStr}___${patientName || ''}`;
     globalNodeStore[cleanPhone] = {
-      state: patientName ? 'CONFIRMING' : 'AWAITING_NAME',
-      schId: slot.schedule.id, date: slot.date, shift: shiftValue, patName: patientName, docId: targetDoctor.id
+      state: 'SELECTING_DOCTOR', docIds: matchingDoctors.map(d => d.id), patientName
     };
+    await supabase.from('bot_sessions').upsert({
+      phone: cleanPhone, current_state: selDocState, patient_name: patientName, last_interaction_at: new Date().toISOString()
+    }, { onConflict: 'phone' });
 
-    if (!patientName) {
-      await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: nameStatePayload, selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
-      try { await supabase.from('whatsapp_sessions').upsert({ space_server_id: `ai_sng_${cleanPhone}`, session_data: JSON.stringify({ date: slot.date, shift: shiftValue }), updated_at: new Date().toISOString() }); } catch (_) {}
-      return `اهلا بك اخي العزيز في مستشفى برج الاطباء\nوجدنا موعداً متاحاً لدى الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n📅 اليوم: *${slot.dayName}* (${slot.date}) - فترة *${slot.shiftLabel}*\n\nفضلاً، يرجى كتابة *اسم المريض* لتأكيد الحجز التلقائي:`;
-    } else {
-      await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: sngStatePayload, patient_name: patientName, selected_doctor_id: targetDoctor.id, selected_schedule_id: slot.schedule.id, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
-      try { await supabase.from('whatsapp_sessions').upsert({ space_server_id: `ai_sng_${cleanPhone}`, session_data: JSON.stringify({ date: slot.date, shift: shiftValue }), updated_at: new Date().toISOString() }); } catch (_) {}
-      return `اهلا بك اخي العزيز في مستشفى برج الاطباء\nفهمنا طلبك بالتسجيل للمريض: *${patientName}*\n👨‍⚕️ الطبيب: *د. ${targetDoctor.name}* (${targetDoctor.specialty})\n\nالموعد المتاح الوحيد هو:\n📅 اليوم: *${slot.dayName}* (${slot.date})\n⏰ الفترة: *${slot.shiftLabel}*\n\nيرجى تأكيد الحجز بالرد بكلمة *نعم* أو *أكد* (أو أرسل *إلغاء* للتراجع):`;
-    }
+    let docsPrompt = `اهلا بك اخي العزيز في مستشفى برج الاطباء\nيوجد لدينا عدة أطباء مختصين في هذا التخصص، يرجى اختيار الطبيب المطلوب بإرسال رقمه:\n`;
+    matchingDoctors.forEach((d, i) => {
+      docsPrompt += `\n*${i + 1}* - د. ${d.name} (${d.specialty})`;
+    });
+    if (patientName) docsPrompt += `\n\n*(التسجيل مسجل باسم المريض: ${patientName})*`;
+    return docsPrompt;
   }
 
-  const optsPayload = `SELECTING_DAY:::${matchingSlots.map(s => `${s.schedule.id}|${s.date}|${s.schedule.start_time}|${s.schedule.max_capacity}|${patientName || ''}|${targetDoctor.id}`).join(':::')}`;
-  globalNodeStore[cleanPhone] = {
-    state: 'SELECTING_DAY', options: matchingSlots, patientName: patientName, doctorId: targetDoctor.id
-  };
-
-  await supabase.from('bot_sessions').upsert({ phone: cleanPhone, current_state: optsPayload, patient_name: patientName, selected_doctor_id: targetDoctor.id, last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
-  try { await supabase.from('whatsapp_sessions').upsert({ space_server_id: `ai_opts_${cleanPhone}`, session_data: JSON.stringify({ options: matchingSlots, patientName, doctorId: targetDoctor.id }), updated_at: new Date().toISOString() }); } catch (_) {}
-  let promptReply = `اهلا بك اخي العزيز في مستشفى برج الاطباء\nمواعيد عيادات الدكتور: *د. ${targetDoctor.name}* (${targetDoctor.specialty}) متاحة في الأيام والفترات التالية:\n`;
-  matchingSlots.forEach((s, i) => { promptReply += `\n*${i + 1}* ⬅️ يوم ${s.dayName} (${s.date}) - فترة ${s.shiftLabel} (${s.schedule.start_time})`; });
-  promptReply += `\n\nفضلاً، أرسل *رقم الموعد المناسب* من 1 إلى ${matchingSlots.length} لإتمام الحجز فوراً:`;
-  if (!patientName) promptReply += `\n*(ملاحظة: سيطلب منك النظام كتابة اسم المريض بعد اختيار الموعد).*`;
-  else promptReply += `\n*(الحجز مسجل باسم المريض: ${patientName})*`;
-  return promptReply;
+  return await processTargetDoctorAutomation(cleanPhone, matchingDoctors[0], patientName, nlu.shift_preference, activeDoctors, supabase);
 }
 
 async function handleWhatsappFlow(phone: string, messageObj: any): Promise<string> {
