@@ -452,6 +452,8 @@ app.put('/api/users/:id', async (req, res) => {
   }
 });
 
+const globalDocFlags: Record<string, any> = {};
+
 // 2. DOCTORS ENDPOINTS (CRUD)
 app.get('/api/doctors', async (req, res) => {
   try {
@@ -462,7 +464,20 @@ app.get('/api/doctors', async (req, res) => {
       .order('created_at', { ascending: true });
 
     if (error) throw error;
-    res.json(data || []);
+
+    let savedFlags: Record<string, any> = {};
+    try {
+      const { data: fRow } = await supabase.from('whatsapp_sessions').select('session_data').eq('space_server_id', 'doctor_checkbox_flags').maybeSingle();
+      if (fRow?.session_data) savedFlags = JSON.parse(fRow.session_data);
+    } catch (_) {}
+
+    const mapped = (data || []).map((d: any) => ({
+      ...d,
+      allow_second_week_booking: d.allow_second_week_booking ?? globalDocFlags[d.id]?.allowSecondWeek ?? savedFlags[d.id]?.allowSecondWeek ?? false,
+      limit_two_patients_per_number: d.limit_two_patients_per_number ?? globalDocFlags[d.id]?.limitTwoPatients ?? savedFlags[d.id]?.limitTwoPatients ?? false
+    }));
+
+    res.json(mapped);
   } catch (err: any) {
     console.error('Fetch doctors error:', err.message);
     res.status(500).json({ error: 'Failed to fetch doctors' });
@@ -481,15 +496,38 @@ app.post('/api/doctors', async (req, res) => {
       .insert([{
         name,
         specialty,
-        is_active: is_active !== undefined ? is_active : true,
-        allow_second_week_booking: allow_second_week_booking !== undefined ? !!allow_second_week_booking : false,
-        limit_two_patients_per_number: limit_two_patients_per_number !== undefined ? !!limit_two_patients_per_number : false
+        is_active: is_active !== undefined ? is_active : true
       }])
       .select()
       .single();
 
     if (error) throw error;
-    res.status(201).json(data);
+
+    const docId = data.id;
+    globalDocFlags[docId] = {
+      allowSecondWeek: !!allow_second_week_booking,
+      limitTwoPatients: !!limit_two_patients_per_number
+    };
+
+    try {
+      const { data: fRow } = await supabase.from('whatsapp_sessions').select('session_data').eq('space_server_id', 'doctor_checkbox_flags').maybeSingle();
+      const fMap = fRow?.session_data ? JSON.parse(fRow.session_data) : {};
+      fMap[docId] = globalDocFlags[docId];
+      await supabase.from('whatsapp_sessions').upsert({ space_server_id: 'doctor_checkbox_flags', session_data: JSON.stringify(fMap), updated_at: new Date().toISOString() });
+    } catch (_) {}
+
+    try {
+      await supabase.from('doctors').update({
+        allow_second_week_booking: !!allow_second_week_booking,
+        limit_two_patients_per_number: !!limit_two_patients_per_number
+      }).eq('id', docId);
+    } catch (_) {}
+
+    res.status(201).json({
+      ...data,
+      allow_second_week_booking: !!allow_second_week_booking,
+      limit_two_patients_per_number: !!limit_two_patients_per_number
+    });
   } catch (err: any) {
     console.error('Create doctor error:', err.message);
     res.status(500).json({ error: 'Failed to create doctor' });
@@ -505,8 +543,6 @@ app.put('/api/doctors/:id', async (req, res) => {
     if (name !== undefined) updateData.name = name;
     if (specialty !== undefined) updateData.specialty = specialty;
     if (is_active !== undefined) updateData.is_active = is_active;
-    if (allow_second_week_booking !== undefined) updateData.allow_second_week_booking = !!allow_second_week_booking;
-    if (limit_two_patients_per_number !== undefined) updateData.limit_two_patients_per_number = !!limit_two_patients_per_number;
 
     const { data, error } = await supabase
       .from('doctors')
@@ -516,7 +552,33 @@ app.put('/api/doctors/:id', async (req, res) => {
       .single();
 
     if (error) throw error;
-    res.json(data);
+
+    if (allow_second_week_booking !== undefined || limit_two_patients_per_number !== undefined) {
+      globalDocFlags[id] = {
+        allowSecondWeek: allow_second_week_booking !== undefined ? !!allow_second_week_booking : (globalDocFlags[id]?.allowSecondWeek ?? false),
+        limitTwoPatients: limit_two_patients_per_number !== undefined ? !!limit_two_patients_per_number : (globalDocFlags[id]?.limitTwoPatients ?? false)
+      };
+
+      try {
+        const { data: fRow } = await supabase.from('whatsapp_sessions').select('session_data').eq('space_server_id', 'doctor_checkbox_flags').maybeSingle();
+        const fMap = fRow?.session_data ? JSON.parse(fRow.session_data) : {};
+        fMap[id] = globalDocFlags[id];
+        await supabase.from('whatsapp_sessions').upsert({ space_server_id: 'doctor_checkbox_flags', session_data: JSON.stringify(fMap), updated_at: new Date().toISOString() });
+      } catch (_) {}
+
+      try {
+        const extraUp: any = {};
+        if (allow_second_week_booking !== undefined) extraUp.allow_second_week_booking = !!allow_second_week_booking;
+        if (limit_two_patients_per_number !== undefined) extraUp.limit_two_patients_per_number = !!limit_two_patients_per_number;
+        await supabase.from('doctors').update(extraUp).eq('id', id);
+      } catch (_) {}
+    }
+
+    res.json({
+      ...data,
+      allow_second_week_booking: globalDocFlags[id]?.allowSecondWeek ?? data.allow_second_week_booking ?? false,
+      limit_two_patients_per_number: globalDocFlags[id]?.limitTwoPatients ?? data.limit_two_patients_per_number ?? false
+    });
   } catch (err: any) {
     console.error('Update doctor error:', err.message);
     res.status(500).json({ error: 'Failed to update doctor' });
@@ -931,6 +993,14 @@ app.post('/api/bookings/:id/send-reminder', async (req, res) => {
         session_data: JSON.stringify(remindersDict),
         updated_at: new Date().toISOString()
       });
+
+    const remState = `REMINDER_REPLY:::${booking.id}:::${booking.patient_name}:::${doctorName}`;
+    globalNodeStore[cleanPhone] = {
+      state: 'REMINDER_REPLY', bookingId: booking.id, patName: booking.patient_name, docName: doctorName
+    };
+    await supabase.from('bot_sessions').upsert({
+      phone: cleanPhone, current_state: remState, patient_name: booking.patient_name, last_interaction_at: new Date().toISOString()
+    }, { onConflict: 'phone' });
 
     res.json({
       success: true,
@@ -3020,7 +3090,10 @@ async function handleAIAgentWhatsappAutomation(cleanPhone: string, messageText: 
   }
 
   if ((session && session.current_state?.startsWith('CONFIRMING')) || globalNodeStore[cleanPhone]?.state === 'CONFIRMING') {
-    if (nlu.intent === 'CONFIRMATION' || messageText.trim() === '1' || messageText.trim().toLowerCase() === 'نعم' || messageText.trim() === 'اكد' || messageText.trim() === 'أكد' || messageText.trim() === 'تاكيد') {
+    const cleanReply = normalizeArabicText(messageText);
+    const isConfirmIntent = nlu.intent === 'CONFIRMATION' || ['نعم', 'اكد', 'أكد', 'تاكيد', 'تأكيد', 'موافق', 'تمام', 'احجز', '1', '١', 'ايوه', 'ايوا', 'توكل', 'قدام'].some(w => cleanReply === normalizeArabicText(w) || cleanReply.includes(normalizeArabicText(w)));
+
+    if (isConfirmIntent) {
       let dateStr = '';
       let shiftVal: 'Morning' | 'Evening' = 'Morning';
       let schId = session?.selected_schedule_id || globalNodeStore[cleanPhone]?.schId;
