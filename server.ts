@@ -467,8 +467,8 @@ app.get('/api/doctors', async (req, res) => {
 
     let savedFlags: Record<string, any> = {};
     try {
-      const { data: fRow } = await supabase.from('whatsapp_sessions').select('session_data').eq('space_server_id', 'doctor_checkbox_flags').maybeSingle();
-      if (fRow?.session_data) savedFlags = JSON.parse(fRow.session_data);
+      const { data: sRow } = await supabase.from('bot_sessions').select('current_state').eq('phone', '__DOCTOR_FLAGS__').maybeSingle();
+      if (sRow?.current_state) savedFlags = JSON.parse(sRow.current_state);
     } catch (_) {}
 
     const mapped = (data || []).map((d: any) => ({
@@ -510,10 +510,10 @@ app.post('/api/doctors', async (req, res) => {
     };
 
     try {
-      const { data: fRow } = await supabase.from('whatsapp_sessions').select('session_data').eq('space_server_id', 'doctor_checkbox_flags').maybeSingle();
-      const fMap = fRow?.session_data ? JSON.parse(fRow.session_data) : {};
+      const { data: sRow } = await supabase.from('bot_sessions').select('current_state').eq('phone', '__DOCTOR_FLAGS__').maybeSingle();
+      const fMap = sRow?.current_state ? JSON.parse(sRow.current_state) : {};
       fMap[docId] = globalDocFlags[docId];
-      await supabase.from('whatsapp_sessions').upsert({ space_server_id: 'doctor_checkbox_flags', session_data: JSON.stringify(fMap), updated_at: new Date().toISOString() });
+      await supabase.from('bot_sessions').upsert({ phone: '__DOCTOR_FLAGS__', current_state: JSON.stringify(fMap), last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
     } catch (_) {}
 
     try {
@@ -560,10 +560,10 @@ app.put('/api/doctors/:id', async (req, res) => {
       };
 
       try {
-        const { data: fRow } = await supabase.from('whatsapp_sessions').select('session_data').eq('space_server_id', 'doctor_checkbox_flags').maybeSingle();
-        const fMap = fRow?.session_data ? JSON.parse(fRow.session_data) : {};
+        const { data: sRow } = await supabase.from('bot_sessions').select('current_state').eq('phone', '__DOCTOR_FLAGS__').maybeSingle();
+        const fMap = sRow?.current_state ? JSON.parse(sRow.current_state) : {};
         fMap[id] = globalDocFlags[id];
-        await supabase.from('whatsapp_sessions').upsert({ space_server_id: 'doctor_checkbox_flags', session_data: JSON.stringify(fMap), updated_at: new Date().toISOString() });
+        await supabase.from('bot_sessions').upsert({ phone: '__DOCTOR_FLAGS__', current_state: JSON.stringify(fMap), last_interaction_at: new Date().toISOString() }, { onConflict: 'phone' });
       } catch (_) {}
 
       try {
